@@ -42,10 +42,12 @@ export class Hours extends pulumi.ComponentResource {
           .all([args.platformTableArn, args.policyStoreArn])
           .apply(([tableArn, policyStoreArn]) => [
             {
+              // Member path: listMemberAttendanceInRange (GSI1). Roster path:
+              // listTrainingEventsInRange (GSI3), then listEventAttendees (base table).
               Sid: "TrainingHoursReadAccess" as const,
               Effect: "Allow" as const,
               Action: ["dynamodb:Query"],
-              Resource: [tableArn],
+              Resource: [tableArn, `${tableArn}/index/GSI1`, `${tableArn}/index/GSI3`],
             },
             verifiedPermissionsPolicyStatement(policyStoreArn),
           ]),

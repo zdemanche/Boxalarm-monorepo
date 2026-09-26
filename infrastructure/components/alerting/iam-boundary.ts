@@ -5,9 +5,7 @@ import { requireEnv } from "../shared/env";
 export interface AlertingPlaneBoundaryArgs {
   env: string;
   platformTableArn: pulumi.Input<string>;
-  platformStreamArn: pulumi.Input<string>;
   incidentTableArn: pulumi.Input<string>;
-  incidentStreamArn: pulumi.Input<string>;
 }
 
 /**
@@ -28,20 +26,18 @@ export class AlertingPlaneBoundary extends pulumi.ComponentResource {
     super("boxalarm:alerting:AlertingPlaneBoundary", name, {}, opts);
     const { env } = args;
 
+    // Streams are denied by wildcard, not by the current stream ARN: disabling and
+    // re-enabling a table's stream mints a new label, and a pinned ARN would silently stop
+    // covering it.
     const deniedTableResources = pulumi
-      .all([
-        args.platformTableArn,
-        args.platformStreamArn,
-        args.incidentTableArn,
-        args.incidentStreamArn,
-      ])
-      .apply(([platformTableArn, platformStreamArn, incidentTableArn, incidentStreamArn]) => [
+      .all([args.platformTableArn, args.incidentTableArn])
+      .apply(([platformTableArn, incidentTableArn]) => [
         platformTableArn,
         `${platformTableArn}/index/*`,
-        platformStreamArn,
+        `${platformTableArn}/stream/*`,
         incidentTableArn,
         `${incidentTableArn}/index/*`,
-        incidentStreamArn,
+        `${incidentTableArn}/stream/*`,
       ]);
 
     this.policy = new aws.iam.Policy(

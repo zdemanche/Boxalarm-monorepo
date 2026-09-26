@@ -199,13 +199,11 @@ export class Members extends pulumi.ComponentResource {
       { parent: this },
     );
 
-    // E2-S6-INFRA #208: member self-service profile/contact update. UpdateMember is an
-    // ADMIN_ONLY_ACTION in cedar-policies.ts today (grep for it) — updateMember.ts's
-    // resourceId is the caller-supplied memberId path param, not principal.sub, so
-    // opening this action to every role before the handler enforces memberId ===
-    // principal.sub would let any member edit any other member's profile in the same
-    // department. Wiring the route without widening the grant; the self-check belongs in
-    // updateMember.ts (backend, out of this infra ticket's footprint).
+    // E2-S6-INFRA #208: member self-service profile/contact update (F2.6, AP 12). One route,
+    // two Cedar actions: updateMember.ts authorizes SelfUpdateMember (every role, via the
+    // self-service policy) when the path memberId is the caller's own sub — and re-checks
+    // memberId === principal.sub before writing — and UpdateMember (ADMIN_ONLY_ACTIONS,
+    // CHIEF/ADMIN) for anyone else's profile.
     this.updateProfileLambda = new ServiceLambda(
       `${name}-update-profile`,
       {
@@ -215,7 +213,14 @@ export class Members extends pulumi.ComponentResource {
         handler: LAMBDA_HANDLER,
         code: lambdaCode("personnel-service", "members-update-profile"),
         logGroup: args.logGroup,
-        environment: baseEnvironment,
+        // updateMember.ts reads PLATFORM_TABLE_NAME (config.ts readMemberServiceConfig),
+        // not PERSONNEL_TABLE_NAME like the other members routes.
+        environment: {
+          PLATFORM_TABLE_NAME: args.platformTableName,
+          VERIFIED_PERMISSIONS_POLICY_STORE_ID: args.policyStoreId,
+        },
+        // UpdateItem (member row) + PutItem (outbox row), one transaction; plus the
+        // audit-key mutation deny every table-wide UpdateItem holder carries (F9.4).
         additionalPolicyStatements: pulumi
           .all([args.platformTableArn, vpStatement])
           .apply(([tableArn, vp]) => [
@@ -226,6 +231,7 @@ export class Members extends pulumi.ComponentResource {
               Resource: [tableArn],
             },
             ...vp,
+            auditMutationDenyStatement(tableArn),
           ]),
       },
       { parent: this },

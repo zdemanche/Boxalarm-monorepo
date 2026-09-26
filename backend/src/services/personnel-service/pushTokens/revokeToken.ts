@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import type { APIGatewayProxyResultV2 } from 'aws-lambda';
 import {
   badRequestProblem,
+  forbiddenProblem,
   notFoundProblem,
   withAuthorization,
   type CedarPrincipalContext,
@@ -46,6 +47,13 @@ async function revokeToken(
   const memberId = event.pathParameters?.memberId;
   if (!memberId) {
     return badRequestProblem(traceId, 'memberId path parameter is required');
+  }
+  // A device may only revoke its own member's push token. Cedar cannot compare the caller
+  // with the path member (no entity attributes reach it), and RegisterPushToken /
+  // RevokePushToken are every-role actions, so without this any member could point
+  // another member's pages at their own device - or strip that member's token.
+  if (memberId !== principal.sub) {
+    return forbiddenProblem(traceId);
   }
 
   const deptId = toVerifiedDeptId(principal);
@@ -145,8 +153,8 @@ async function revokeToken(
 }
 
 export const handler = withAuthorization(revokeToken, {
-  actionType: 'MEMBER',
+  actionType: 'Boxalarm::Action',
   actionId: 'RevokePushToken',
-  resourceType: 'MEMBER',
+  resourceType: 'Boxalarm::Member',
   resourceId: (event) => event.pathParameters?.memberId ?? '',
 });

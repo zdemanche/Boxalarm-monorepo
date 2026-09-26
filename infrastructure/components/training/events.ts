@@ -3,6 +3,7 @@ import { ServiceLambda } from "../observability/service-lambda";
 import { ServiceLogGroup } from "../observability/service-log-group";
 import { HttpApi } from "../api/http-api";
 import { verifiedPermissionsPolicyStatement } from "../authz/policy-store";
+import { auditMutationDenyStatement } from "../data/platform-table";
 import { lambdaCode, LAMBDA_HANDLER } from "../shared/lambda-code";
 import { requireEnv } from "../shared/env";
 
@@ -32,13 +33,36 @@ export class Events extends pulumi.ComponentResource {
     super("boxalarm:training:Events", name, {}, opts);
     const { env } = args;
 
-    const tableStatement = pulumi.output(args.platformTableArn).apply((arn) => [
+    // createEventHandler: createTrainingEvent is a single Put.
+    const createStatement = pulumi.output(args.platformTableArn).apply((arn) => [
       {
-        Sid: "TrainingEventsTableAccess" as const,
+        Sid: "TrainingEventsCreateAccess" as const,
         Effect: "Allow" as const,
-        Action: ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:Query"],
+        Action: ["dynamodb:PutItem"],
         Resource: [arn],
       },
+    ]);
+    // listEventsHandler: listTrainingEvents Queries GSI3, listMemberAttendanceEventIds
+    // Queries GSI1 — read-only, index-only.
+    const listStatement = pulumi.output(args.platformTableArn).apply((arn) => [
+      {
+        Sid: "TrainingEventsListAccess" as const,
+        Effect: "Allow" as const,
+        Action: ["dynamodb:Query"],
+        Resource: [`${arn}/index/GSI3`, `${arn}/index/GSI1`],
+      },
+    ]);
+    // signupHandler: getTrainingEvent (GetItem), self-signup createSignupAttendance (PutItem),
+    // and officer attendance recording — recordAttendanceHours, a transaction of Update
+    // items that IAM authorizes as UpdateItem.
+    const signupStatement = pulumi.output(args.platformTableArn).apply((arn) => [
+      {
+        Sid: "TrainingEventsSignupAccess" as const,
+        Effect: "Allow" as const,
+        Action: ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:UpdateItem"],
+        Resource: [arn],
+      },
+      auditMutationDenyStatement(arn),
     ]);
     const vpStatement = pulumi
       .output(args.policyStoreArn)
@@ -58,7 +82,7 @@ export class Events extends pulumi.ComponentResource {
           VERIFIED_PERMISSIONS_POLICY_STORE_ID: args.policyStoreId,
         },
         additionalPolicyStatements: pulumi
-          .all([tableStatement, vpStatement])
+          .all([createStatement, vpStatement])
           .apply(([table, vp]) => [...table, ...vp]),
       },
       { parent: this },
@@ -79,7 +103,7 @@ export class Events extends pulumi.ComponentResource {
         code: lambdaCode("training-service", "events-list"),
         logGroup: args.logGroup,
         environment: { TRAINING_TABLE_NAME: args.platformTableName },
-        additionalPolicyStatements: tableStatement,
+        additionalPolicyStatements: listStatement,
       },
       { parent: this },
     );
@@ -103,7 +127,7 @@ export class Events extends pulumi.ComponentResource {
           VERIFIED_PERMISSIONS_POLICY_STORE_ID: args.policyStoreId,
         },
         additionalPolicyStatements: pulumi
-          .all([tableStatement, vpStatement])
+          .all([signupStatement, vpStatement])
           .apply(([table, vp]) => [...table, ...vp]),
       },
       { parent: this },

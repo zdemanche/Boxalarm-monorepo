@@ -70,6 +70,7 @@ describe("Availability — availability-changed consumer (#207)", () => {
       httpApi,
       platformBus,
       alertingTableArn: pulumi.output("arn:aws:dynamodb:us-east-1:123456789012:table/alerting"),
+      alertingCmkArn: "arn:aws:kms:us-east-1:123456789012:key/alerting-cmk",
       alertingTableName: pulumi.output("alerting-table"),
       alertingLogGroup,
       alertingPermissionsBoundaryArn: pulumi.output(
@@ -113,6 +114,18 @@ describe("Availability — availability-changed consumer (#207)", () => {
     expect(policyJson).toContain("table/alerting");
     expect(policyJson).not.toContain("table/platform");
     expect(policyJson).not.toContain("table/incident");
+  });
+
+  it("grants the availability-changed consumer every item action of its transaction (Put + Update)", async () => {
+    const availability = await build();
+    const policyJson = await resolve(availability.availabilityChangedConsumer.rolePolicy.policy);
+    const statements = (
+      JSON.parse(policyJson) as { Statement: { Sid?: string; Action: string[] }[] }
+    ).Statement;
+    const write = statements.find((s) => s.Sid === "AlertingTableWrite");
+    expect(write?.Action).toEqual(
+      expect.arrayContaining(["dynamodb:PutItem", "dynamodb:UpdateItem"]),
+    );
   });
 
   it("does not VPC-attach the availability-changed consumer", async () => {

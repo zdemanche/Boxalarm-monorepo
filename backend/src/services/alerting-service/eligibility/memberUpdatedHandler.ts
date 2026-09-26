@@ -41,8 +41,18 @@ function emitSnapshotMetric(outcome: 'Updated' | 'Stale' | 'Failed'): void {
   );
 }
 
+/**
+ * The queue is fed by an EventBridge rule target with no inputPath, so each SQS body is the
+ * whole EventBridge event and the outbox envelope sits under `detail` — the same contract
+ * eligibilityChangedConsumer parses.
+ */
 function parseEnvelope(body: string): MemberUpdatedEnvelope {
-  const envelope = JSON.parse(body) as Partial<MemberUpdatedEnvelope>;
+  const parsed = JSON.parse(body) as { detail?: unknown };
+  const detail = parsed.detail;
+  if (typeof detail !== 'object' || detail === null) {
+    throw new Error('personnel.member.updated message is missing detail');
+  }
+  const envelope = detail as Partial<MemberUpdatedEnvelope>;
   const payload = envelope.payload;
   if (!payload || typeof payload.memberId !== 'string' || payload.memberId.length === 0) {
     throw new Error('personnel.member.updated payload is missing memberId');

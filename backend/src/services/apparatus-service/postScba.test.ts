@@ -265,7 +265,9 @@ describe('postScba handler', () => {
     const [metadataPut, testPut] = findTransactItems(dynamoClient);
     expect(metadataPut?.Put.Item.entityType).toBe('SCBA_RECORD');
     expect(metadataPut?.Put.Item.pk).toBe('DEPT#dept-001#SCBA#SCBA-001');
-    expect(metadataPut?.Put.Item.apparatusId).toBe('ENGINE-2');
+    // The path carries the display unitId; the stored record carries the resolved apparatusId.
+    expect(metadataPut?.Put.Item.apparatusId).toBe('APP-ENGINE-2');
+    expect(testPut?.Put.Item.apparatusId).toBe('APP-ENGINE-2');
     expect(metadataPut?.Put.Item.nextFlowTestDue).toBe('2027-01-01');
     expect(metadataPut?.Put.Item.nextHydroTestDue).toBe('2031-05-31');
     expect(testPut?.Put.Item.entityType).toBe('SCBA_TEST');

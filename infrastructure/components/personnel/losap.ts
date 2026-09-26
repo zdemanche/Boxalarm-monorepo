@@ -31,12 +31,22 @@ export class Losap extends pulumi.ComponentResource {
     super("boxalarm:personnel:Losap", name, {}, opts);
     const { env } = args;
 
-    const readStatement = pulumi.output(args.platformTableArn).apply((arn) => [
+    // getMemberLosap.ts: getMemberLosapTotal is a base-table Query only.
+    const memberTotalStatement = pulumi.output(args.platformTableArn).apply((arn) => [
       {
-        Sid: "LosapReadAccess" as const,
+        Sid: "LosapMemberTotalAccess" as const,
         Effect: "Allow" as const,
-        Action: ["dynamodb:GetItem", "dynamodb:Query"],
-        Resource: [arn, `${arn}/index/GSI1`, `${arn}/index/GSI3`],
+        Action: ["dynamodb:Query"],
+        Resource: [arn],
+      },
+    ]);
+    // yearEndReport.ts: listMembers (GSI3) + getYearEndReport (base-table Query).
+    const yearEndStatement = pulumi.output(args.platformTableArn).apply((arn) => [
+      {
+        Sid: "LosapYearEndAccess" as const,
+        Effect: "Allow" as const,
+        Action: ["dynamodb:Query"],
+        Resource: [arn, `${arn}/index/GSI3`],
       },
     ]);
     const writeStatement = pulumi.output(args.platformTableArn).apply((arn) => [
@@ -62,7 +72,7 @@ export class Losap extends pulumi.ComponentResource {
           VERIFIED_PERMISSIONS_POLICY_STORE_ID: args.policyStoreId,
         },
         additionalPolicyStatements: pulumi
-          .all([readStatement, pulumi.output(args.policyStoreArn)])
+          .all([memberTotalStatement, pulumi.output(args.policyStoreArn)])
           .apply(([table, policyStoreArn]) => [
             ...table,
             verifiedPermissionsPolicyStatement(policyStoreArn),
@@ -112,7 +122,7 @@ export class Losap extends pulumi.ComponentResource {
           PERSONNEL_TABLE_NAME: args.platformTableName,
           PLATFORM_SERVICE_TABLE_NAME: args.platformTableName,
         },
-        additionalPolicyStatements: readStatement,
+        additionalPolicyStatements: yearEndStatement,
       },
       { parent: this },
     );

@@ -4,6 +4,7 @@ import { toVerifiedDeptId } from '@boxalarm/dept-scope';
 import { buildEscalationDeduplicationId, publishEscalationTriggered } from './snsClient.js';
 
 const DEPT_ID = toVerifiedDeptId({ deptId: 'NICHOLS' });
+const DISPATCH = { incidentType: 'STRUCTURE_FIRE', address: '1 Main St', isTest: false };
 
 describe('buildEscalationDeduplicationId', () => {
   it('is deterministic for the same dispatchId/toneSequence/memberId', () => {
@@ -31,6 +32,7 @@ describe('publishEscalationTriggered', () => {
         dispatchId: 'dispatch-1',
         memberId: 'mbr-1',
         toneSequence: 1,
+        dispatch: DISPATCH,
       },
     );
 
@@ -49,9 +51,13 @@ describe('publishEscalationTriggered', () => {
     };
     expect(envelope.eventType).toBe('alerting.escalation.triggered');
     expect(envelope.payload).toMatchObject({
+      deptId: 'NICHOLS',
       channel: 'voice',
       channelTier: 'escalation',
       toneSequence: 1,
+      incidentType: 'STRUCTURE_FIRE',
+      address: '1 Main St',
+      isTest: false,
     });
   });
 
@@ -68,6 +74,7 @@ describe('publishEscalationTriggered', () => {
           dispatchId: 'dispatch-1',
           memberId: 'mbr-1',
           toneSequence: 1,
+          dispatch: DISPATCH,
         },
       ),
     ).rejects.toThrow('sns unavailable');

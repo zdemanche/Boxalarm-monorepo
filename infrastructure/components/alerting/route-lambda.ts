@@ -6,6 +6,20 @@ import { ServiceLogGroup } from "../observability/service-log-group";
 import { ServiceName } from "../observability/services";
 import { IamPolicyStatement } from "../observability/observability-policy";
 
+/**
+ * The Verified Permissions grant every Cognito-authorized route Lambda needs: @boxalarm/authz
+ * calls IsAuthorizedWithToken in-handler. Shared by every route component so the statement is
+ * written once.
+ */
+export function verifiedPermissionsStatement(): IamPolicyStatement {
+  return {
+    Sid: "VerifiedPermissionsIsAuthorized",
+    Effect: "Allow",
+    Action: ["verifiedpermissions:IsAuthorizedWithToken"],
+    Resource: "*",
+  };
+}
+
 export interface AlertingRouteArgs {
   env: string;
   httpApi: HttpApi;
@@ -18,6 +32,8 @@ export interface AlertingRouteArgs {
   environment?: Record<string, pulumi.Input<string>>;
   additionalPolicyStatements?: pulumi.Input<IamPolicyStatement[]>;
   reservedConcurrentExecutions?: number;
+  /** Seconds; unset means the AWS 3s default. API Gateway HTTP API caps integrations at 30s. */
+  timeout?: number;
   permissionsBoundaryArn?: pulumi.Input<string>;
   /** false = no Cognito/Verified-Permissions authorizer (vendor webhook routes). Default true. */
   authorized?: boolean;
@@ -49,6 +65,7 @@ export class AlertingRoute extends pulumi.ComponentResource {
         environment: args.environment,
         additionalPolicyStatements: args.additionalPolicyStatements,
         reservedConcurrentExecutions: args.reservedConcurrentExecutions,
+        timeout: args.timeout,
         permissionsBoundaryArn: args.permissionsBoundaryArn,
       },
       { parent: this },

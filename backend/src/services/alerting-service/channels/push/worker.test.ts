@@ -14,7 +14,7 @@ afterEach(() => {
   process.env = { ...originalEnv };
 });
 
-function sqsEvent(channel: string, memberId = 'mbr-1'): SQSEvent {
+function sqsEvent(channel: string, memberId = 'mbr-1', isTest = false): SQSEvent {
   return {
     Records: [
       {
@@ -33,6 +33,7 @@ function sqsEvent(channel: string, memberId = 'mbr-1'): SQSEvent {
             channel,
             channelTier: 'primary',
             toneSequence: 1,
+            isTest,
             incidentType: 'structure-fire',
             address: '12 Main St',
           },
@@ -94,6 +95,32 @@ describe('push channel worker (entrypoint-test obligation)', () => {
       'tok-1',
       'structure-fire — 12 Main St',
       process.env,
+      { isTest: false },
+    );
+  });
+
+  it('sends a self-test/canary message (isTest=true, as fan-out stamps it) with the sandbox credentials', async () => {
+    const sendViaHttpProvider = vi.fn().mockResolvedValue(undefined);
+    const send = vi.fn().mockImplementation((command: { constructor: { name: string } }) => {
+      if (command.constructor.name === 'GetCommand') {
+        return Promise.resolve({
+          Item: { contactChannels: [{ channel: 'PUSH', token: 'tok-1', valid: true }] },
+        });
+      }
+      return Promise.resolve({});
+    });
+    mockDeps(sendViaHttpProvider, send);
+    const { handler } = await import('./worker.js');
+
+    const result = await handler(sqsEvent('push', 'mbr-1', true));
+
+    expect(result.batchItemFailures).toEqual([]);
+    expect(sendViaHttpProvider).toHaveBeenCalledWith(
+      'push',
+      'tok-1',
+      'structure-fire — 12 Main St',
+      process.env,
+      { isTest: true },
     );
   });
 
@@ -130,6 +157,7 @@ describe('push channel worker (entrypoint-test obligation)', () => {
       'tok-1',
       'structure-fire — 12 Main St',
       process.env,
+      { isTest: false },
     );
   });
 

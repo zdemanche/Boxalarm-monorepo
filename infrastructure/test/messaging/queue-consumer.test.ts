@@ -31,7 +31,7 @@ async function resolve<T>(output: pulumi.Output<T>): Promise<T> {
 }
 
 describe("QueueConsumer", () => {
-  async function build() {
+  async function build(extra: { reportBatchItemFailures?: boolean } = {}) {
     const { QueueConsumer } = await import("../../components/messaging/queue-consumer");
     const awsMod = await import("@pulumi/aws");
     const role = new awsMod.iam.Role("consumer-role", { assumeRolePolicy: "{}" });
@@ -47,6 +47,7 @@ describe("QueueConsumer", () => {
       queueName: "boxalarm-dev-test-queue",
       lambda: fn,
       lambdaRole: role,
+      ...extra,
     });
   }
 
@@ -90,6 +91,20 @@ describe("QueueConsumer", () => {
     await settle(consumer);
     const scalingConfig = await resolve(consumer.eventSourceMapping.scalingConfig);
     expect(scalingConfig?.maximumConcurrency).toBeGreaterThanOrEqual(2);
+  });
+
+  it("leaves ReportBatchItemFailures off by default so throw-to-fail handlers keep their semantics", async () => {
+    const consumer = await build();
+    await settle(consumer);
+    const responseTypes = await resolve(consumer.eventSourceMapping.functionResponseTypes);
+    expect(responseTypes ?? []).not.toContain("ReportBatchItemFailures");
+  });
+
+  it("sets ReportBatchItemFailures when a batchItemFailures-returning handler opts in", async () => {
+    const consumer = await build({ reportBatchItemFailures: true });
+    await settle(consumer);
+    const responseTypes = await resolve(consumer.eventSourceMapping.functionResponseTypes);
+    expect(responseTypes).toEqual(["ReportBatchItemFailures"]);
   });
 
   it("alarms on DLQ depth above zero", async () => {

@@ -1,15 +1,17 @@
 import * as pulumi from "@pulumi/pulumi";
 import { HttpApi } from "../api/http-api";
 import { ServiceLogGroup } from "../observability/service-log-group";
-import { IamPolicyStatement } from "../observability/observability-policy";
 import { requireEnv } from "../shared/env";
 import { lambdaCode, LAMBDA_HANDLER } from "../shared/lambda-code";
-import { AlertingRoute } from "./route-lambda";
+import { AlertingRoute, verifiedPermissionsStatement } from "./route-lambda";
+import { grantAlertingCmk } from "./alerting-cmk";
 
 export interface RoutesOpsArgs {
   env: string;
   httpApi: HttpApi;
   alertingTableArn: pulumi.Input<string>;
+  /** Alerting-table CMK — every role touching the table needs it (alerting-cmk.ts). */
+  alertingCmkArn: pulumi.Input<string>;
   alertingTableName: pulumi.Input<string>;
   logGroup: ServiceLogGroup;
   policyStoreId: pulumi.Input<string>;
@@ -17,6 +19,13 @@ export interface RoutesOpsArgs {
 }
 
 type VendorChannel = "sms" | "voice" | "push";
+
+/**
+ * Every ops route sets an explicit timeout rather than the AWS 3s default: audit and
+ * delivery-baseline run two index queries plus a Verified Permissions round trip, and the
+ * vendor webhooks need cold-start headroom. Well under the HTTP API's 30s integration cap.
+ */
+export const ROUTES_OPS_TIMEOUT_SECONDS = 10;
 const VENDOR_CHANNELS: readonly VendorChannel[] = ["sms", "voice", "push"];
 
 /**
@@ -42,12 +51,7 @@ export class RoutesOps extends pulumi.ComponentResource {
     super("boxalarm:alerting:RoutesOps", name, {}, opts);
     const { env } = args;
 
-    const verifiedPermissionsStatement: IamPolicyStatement = {
-      Sid: "VerifiedPermissionsIsAuthorized",
-      Effect: "Allow",
-      Action: ["verifiedpermissions:IsAuthorizedWithToken"],
-      Resource: "*",
-    };
+    const vpStatement = verifiedPermissionsStatement();
 
     // src/services/alerting-service/selfTest/postHandler.handler
     this.selfTestPost = new AlertingRoute(
@@ -72,9 +76,10 @@ export class RoutesOps extends pulumi.ComponentResource {
             Action: ["dynamodb:PutItem", "dynamodb:TransactWriteItems", "dynamodb:Query"],
             Resource: args.alertingTableArn as string,
           },
-          verifiedPermissionsStatement,
+          vpStatement,
         ],
         reservedConcurrentExecutions: 3,
+        timeout: ROUTES_OPS_TIMEOUT_SECONDS,
         permissionsBoundaryArn: args.permissionsBoundaryArn,
       },
       { parent: this },
@@ -103,9 +108,10 @@ export class RoutesOps extends pulumi.ComponentResource {
             Action: ["dynamodb:Query", "dynamodb:GetItem"],
             Resource: args.alertingTableArn as string,
           },
-          verifiedPermissionsStatement,
+          vpStatement,
         ],
         reservedConcurrentExecutions: 3,
+        timeout: ROUTES_OPS_TIMEOUT_SECONDS,
         permissionsBoundaryArn: args.permissionsBoundaryArn,
       },
       { parent: this },
@@ -134,9 +140,10 @@ export class RoutesOps extends pulumi.ComponentResource {
             Action: ["dynamodb:Query"],
             Resource: [tableArn, `${tableArn}/index/GSI1`, `${tableArn}/index/GSI2`],
           },
-          verifiedPermissionsStatement,
+          vpStatement,
         ]),
         reservedConcurrentExecutions: 3,
+        timeout: ROUTES_OPS_TIMEOUT_SECONDS,
         permissionsBoundaryArn: args.permissionsBoundaryArn,
       },
       { parent: this },
@@ -165,9 +172,10 @@ export class RoutesOps extends pulumi.ComponentResource {
             Action: ["dynamodb:Query"],
             Resource: args.alertingTableArn as string,
           },
-          verifiedPermissionsStatement,
+          vpStatement,
         ],
         reservedConcurrentExecutions: 3,
+        timeout: ROUTES_OPS_TIMEOUT_SECONDS,
         permissionsBoundaryArn: args.permissionsBoundaryArn,
       },
       { parent: this },
@@ -229,6 +237,7 @@ export class RoutesOps extends pulumi.ComponentResource {
             },
           ],
           reservedConcurrentExecutions: 5,
+          timeout: ROUTES_OPS_TIMEOUT_SECONDS,
           permissionsBoundaryArn: args.permissionsBoundaryArn,
         },
         { parent: this },
@@ -259,9 +268,10 @@ export class RoutesOps extends pulumi.ComponentResource {
             Action: ["dynamodb:Query"],
             Resource: args.alertingTableArn as string,
           },
-          verifiedPermissionsStatement,
+          vpStatement,
         ],
         reservedConcurrentExecutions: 3,
+        timeout: ROUTES_OPS_TIMEOUT_SECONDS,
         permissionsBoundaryArn: args.permissionsBoundaryArn,
       },
       { parent: this },
@@ -290,9 +300,10 @@ export class RoutesOps extends pulumi.ComponentResource {
             Action: ["dynamodb:PutItem", "dynamodb:GetItem"],
             Resource: args.alertingTableArn as string,
           },
-          verifiedPermissionsStatement,
+          vpStatement,
         ],
         reservedConcurrentExecutions: 5,
+        timeout: ROUTES_OPS_TIMEOUT_SECONDS,
         permissionsBoundaryArn: args.permissionsBoundaryArn,
       },
       { parent: this },
@@ -322,9 +333,10 @@ export class RoutesOps extends pulumi.ComponentResource {
             Action: ["dynamodb:GetItem", "dynamodb:Query"],
             Resource: args.alertingTableArn as string,
           },
-          verifiedPermissionsStatement,
+          vpStatement,
         ],
         reservedConcurrentExecutions: 3,
+        timeout: ROUTES_OPS_TIMEOUT_SECONDS,
         permissionsBoundaryArn: args.permissionsBoundaryArn,
       },
       { parent: this },
@@ -353,9 +365,10 @@ export class RoutesOps extends pulumi.ComponentResource {
             Action: ["dynamodb:GetItem", "dynamodb:Query"],
             Resource: args.alertingTableArn as string,
           },
-          verifiedPermissionsStatement,
+          vpStatement,
         ],
         reservedConcurrentExecutions: 3,
+        timeout: ROUTES_OPS_TIMEOUT_SECONDS,
         permissionsBoundaryArn: args.permissionsBoundaryArn,
       },
       { parent: this },
@@ -384,11 +397,35 @@ export class RoutesOps extends pulumi.ComponentResource {
             Action: ["dynamodb:Query"],
             Resource: [tableArn, `${tableArn}/index/GSI1`, `${tableArn}/index/GSI2`],
           },
-          verifiedPermissionsStatement,
+          vpStatement,
         ]),
         reservedConcurrentExecutions: 3,
+        timeout: ROUTES_OPS_TIMEOUT_SECONDS,
         permissionsBoundaryArn: args.permissionsBoundaryArn,
       },
+      { parent: this },
+    );
+
+    grantAlertingCmk(
+      name,
+      {
+        selfTestPost: this.selfTestPost.lambda.role,
+        selfTestGet: this.selfTestGet.lambda.role,
+        audit: this.audit.lambda.role,
+        receiptsGet: this.receiptsGet.lambda.role,
+        ...Object.fromEntries(
+          VENDOR_CHANNELS.map((channel) => [
+            `${channel}Webhook`,
+            this.webhooks[channel].lambda.role,
+          ]),
+        ),
+        canaryStatus: this.canaryStatus.lambda.role,
+        deviceReportState: this.deviceReportState.lambda.role,
+        diagnostics: this.diagnostics.lambda.role,
+        diagnosticsSelf: this.diagnosticsSelf.lambda.role,
+        deliveryBaseline: this.deliveryBaseline.lambda.role,
+      },
+      args.alertingCmkArn,
       { parent: this },
     );
 

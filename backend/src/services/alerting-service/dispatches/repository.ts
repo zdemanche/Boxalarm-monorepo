@@ -6,7 +6,7 @@ import {
   type DynamoDBDocumentClient,
 } from '@aws-sdk/lib-dynamodb';
 import { buildDeptScopedPk, type VerifiedDeptId } from '@boxalarm/dept-scope';
-import { buildOutboxRecord } from '@boxalarm/outbox';
+import { buildBridgeOutboxRecord } from '../platformBusBridge.js';
 import type { DispatchReceived, SourceSystem } from './dispatchIngressPort.js';
 import { logError, logInfo } from './logger.js';
 
@@ -98,27 +98,28 @@ export async function createManualDispatch(
           ConditionExpression: 'attribute_not_exists(pk)',
         },
       },
+      // INVARIANT: every writer of a non-test DISPATCH_ALERT must emit
+      // dispatch.alert.received in the SAME transaction. This function is the only
+      // DISPATCH_ALERT writer today (MANUAL, CAD, SELF_TEST all come through here),
+      // despite its name. A future ingress path (e.g. /ingress/{adapter}) that writes
+      // DISPATCH_ALERT any other way would silently skip the platform-bus bridge,
+      // so the alert pages but no incident draft is ever pre-populated. SELF_TEST is
+      // excluded on purpose: a member self-test must never reach the LOB bus.
       ...(isTest
         ? []
         : [
             {
               Put: {
                 TableName: tableName,
-                Item: buildOutboxRecord(
+                Item: buildBridgeOutboxRecord(deptId, 'dispatch.alert.received', dispatchId, {
                   deptId,
-                  'alerting-service',
-                  'dispatch.alert.received',
                   dispatchId,
-                  {
-                    deptId,
-                    dispatchId,
-                    incidentType: dispatch.incidentType,
-                    address: dispatch.address,
-                    crossStreets: dispatch.crossStreets,
-                    narrative: dispatch.narrative,
-                    dispatchedAt,
-                  },
-                ),
+                  incidentType: dispatch.incidentType,
+                  address: dispatch.address,
+                  crossStreets: dispatch.crossStreets,
+                  narrative: dispatch.narrative,
+                  dispatchedAt,
+                }),
               },
             },
           ]),

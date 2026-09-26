@@ -6,6 +6,11 @@ export const DEFAULT_CHANNEL_ID = 'notifications-default';
 
 export type PushCategory = 'dispatch' | 'digest';
 
+/**
+ * Deliberate fail-loud default: anything other than an explicit `'digest'` (missing, misspelled,
+ * or a future category) is treated as a dispatch and routed to the critical DND-bypass channel.
+ * A non-urgent notice that is too loud is recoverable; a dispatch that arrives silently is not.
+ */
 export function categoryFromPushData(data: { category?: unknown } | undefined): PushCategory {
   return data?.category === 'digest' ? 'digest' : 'dispatch';
 }

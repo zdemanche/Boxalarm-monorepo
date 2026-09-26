@@ -40,6 +40,8 @@ export function defectPhotoSrc(defect: OpenDefectSummary): string | null {
 }
 
 export function ApparatusDetailPage() {
+  // The route param is the display unitId: the backend resolves GET /apparatus/{unitId} by
+  // unitId (apparatus-service getApparatus.ts -> getApparatusByUnitId), not by apparatusId.
   const { id = '' } = useParams();
   const auth = useAuth();
 
@@ -49,10 +51,11 @@ export function ApparatusDetailPage() {
     enabled: Boolean(id),
   });
 
+  const apparatusId = detailQuery.data?.apparatusId ?? '';
   const equipmentQuery = useQuery({
-    queryKey: ['inventory', 'equipment', 'byApparatus', id],
-    queryFn: () => listEquipment(auth, { assignedToType: 'APPARATUS', assignedToId: id }),
-    enabled: Boolean(id),
+    queryKey: ['inventory', 'equipment', 'byApparatus', apparatusId],
+    queryFn: () => listEquipment(auth, { assignedToType: 'APPARATUS', assignedToId: apparatusId }),
+    enabled: Boolean(apparatusId),
   });
 
   if (detailQuery.error) {
@@ -184,9 +187,11 @@ export function ApparatusDetailPage() {
                 content: <MaintenanceTab apparatusId={unit.apparatusId} />,
               },
               {
+                // POST /{unitId}/scba resolves the unit by unitId; the due-soon feed carries the
+                // resolved apparatusId, so the tab needs both.
                 value: 'scba',
                 label: 'SCBA',
-                content: <ScbaTab apparatusId={unit.apparatusId} />,
+                content: <ScbaTab unitId={unit.unitId} apparatusId={unit.apparatusId} />,
               },
               {
                 // Testing schedules are the one sub-resource the backend resolves and returns by

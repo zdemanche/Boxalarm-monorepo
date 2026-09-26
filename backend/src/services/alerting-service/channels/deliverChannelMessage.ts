@@ -12,9 +12,12 @@ import { createDynamoClient, readAlertingConfig } from '../eligibility/dynamoCli
 import { logError, logInfo } from '../dispatches/logger.js';
 import {
   parseChannelEnvelope,
+  parseMutualAidPromptEnvelope,
   resolveChannelTarget,
+  type ChannelEnvelopePayload,
   type ChannelName,
   type ContactChannelSnapshot,
+  type MutualAidPromptPayload,
 } from './channelEnvelope.js';
 import { sendViaHttpProvider } from './httpProviderAdapter.js';
 
@@ -26,15 +29,59 @@ const CHANNEL_TIER: Record<ChannelName, 'primary' | 'escalation'> = {
   voice: 'escalation',
 };
 
-export interface DeliverChannelMessageParams {
+interface DeliverChannelMessageCommon {
   readonly deptId: VerifiedDeptId;
   readonly dispatchId: string;
   readonly memberId: string;
   readonly channel: ChannelName;
-  readonly toneSequence: number;
   readonly contactChannels: readonly ContactChannelSnapshot[] | undefined;
   readonly message: string;
   readonly env: NodeJS.ProcessEnv;
+  /** Self-test/canary message — sent with the sandbox provider credentials. */
+  readonly isTest?: boolean;
+}
+
+/**
+ * A dispatch page is guarded per tone; a mutual-aid prompt carries no toneSequence and is
+ * guarded in its own MAPROMPT# namespace (architecture §3.1 "Officer push item shape") so it
+ * never collides with the tone-3 receipt an officer already holds.
+ */
+export type DeliverChannelMessageParams = DeliverChannelMessageCommon &
+  (
+    | { readonly alertKind?: 'dispatch'; readonly toneSequence: number }
+    | { readonly alertKind: 'mutual_aid_prompt'; readonly toneSequence?: undefined }
+  );
+
+interface SendGuard {
+  readonly sk: string;
+  readonly idempotencyKey: string;
+  readonly attributes: Record<string, unknown>;
+}
+
+function buildSendGuard(params: DeliverChannelMessageParams, sentAt: number): SendGuard {
+  const { dispatchId, memberId, channel } = params;
+  const channelUpper = channel.toUpperCase();
+  if (params.alertKind === 'mutual_aid_prompt') {
+    // Disjoint from the producer's MAPROMPT#{memberId}#PUSH record, which mutualAidPort writes
+    // before publishing — sharing it would make this worker duplicate-skip every prompt.
+    return {
+      sk: `MAPROMPT#${memberId}#${channelUpper}#SEND`,
+      idempotencyKey: `${dispatchId}#MUTUALAID#${memberId}#${channelUpper}#SEND`,
+      attributes: { entityType: 'MUTUAL_AID_PROMPT_SEND' },
+    };
+  }
+  const { toneSequence } = params;
+  return {
+    sk: `RECEIPT#${memberId}#${channelUpper}#${toneSequence}`,
+    idempotencyKey: `${dispatchId}#${toneSequence}#${memberId}#${channelUpper}`,
+    attributes: {
+      entityType: 'DELIVERY_RECEIPT',
+      channelTier: CHANNEL_TIER[channel],
+      toneSequence,
+      gsi1pk: `MEMBER#${memberId}`,
+      gsi1sk: `RECEIPT#${sentAt}#${dispatchId}`,
+    },
+  };
 }
 
 export async function deliverChannelMessage(
@@ -42,8 +89,8 @@ export async function deliverChannelMessage(
   tableName: string,
   params: DeliverChannelMessageParams,
 ): Promise<void> {
-  const { deptId, dispatchId, memberId, channel, toneSequence, contactChannels, message, env } =
-    params;
+  const { deptId, dispatchId, memberId, channel, contactChannels, message, env } = params;
+  const isTest = params.isTest === true;
   const correlationId = dispatchId;
   const resolved = resolveChannelTarget(channel, contactChannels);
   if (resolved.skipped) {
@@ -57,11 +104,9 @@ export async function deliverChannelMessage(
     return;
   }
 
-  const channelUpper = channel.toUpperCase();
-  const idempotencyKey = `${dispatchId}#${toneSequence}#${memberId}#${channelUpper}`;
   const pk = buildDeptScopedPk(deptId, 'DISPATCH', dispatchId);
-  const sk = `RECEIPT#${memberId}#${channelUpper}#${toneSequence}`;
   const sentAt = Math.floor(Date.now() / 1000);
+  const { sk, idempotencyKey, attributes } = buildSendGuard(params, sentAt);
 
   try {
     await ddb.send(
@@ -70,20 +115,16 @@ export async function deliverChannelMessage(
         Item: {
           pk,
           sk,
-          entityType: 'DELIVERY_RECEIPT',
+          ...attributes,
           dispatchId,
           memberId,
           deptId,
-          channel: channelUpper,
-          channelTier: CHANNEL_TIER[channel],
-          toneSequence,
+          channel: channel.toUpperCase(),
           sentAt,
           deliveredAt: null,
           openedAt: null,
           failureReason: null,
           idempotencyKey,
-          gsi1pk: `MEMBER#${memberId}`,
-          gsi1sk: `RECEIPT#${sentAt}#${dispatchId}`,
         },
         ConditionExpression: 'attribute_not_exists(idempotencyKey)',
       }),
@@ -108,7 +149,7 @@ export async function deliverChannelMessage(
   }
 
   try {
-    await sendViaHttpProvider(channel, resolved.target, message, env);
+    await sendViaHttpProvider(channel, resolved.target, message, env, { isTest });
   } catch (error) {
     logError('alerting.channel.send_failed', error, { correlationId, memberId, channel });
     emitOutcomeMetric(METRIC_NAMESPACE, 'SendFailed', channel);
@@ -177,9 +218,11 @@ export function createChannelWorkerHandler(
     const ddb = createDynamoClient(process.env);
 
     async function processRecord(record: SQSEvent['Records'][number]): Promise<void> {
-      let envelope: ReturnType<typeof parseChannelEnvelope>;
+      let envelope: ChannelEnvelopePayload | MutualAidPromptPayload;
       try {
-        envelope = parseChannelEnvelope(record.body, channel);
+        envelope =
+          parseMutualAidPromptEnvelope(record.body, channel) ??
+          parseChannelEnvelope(record.body, channel);
       } catch (error) {
         logError('alerting.channel.malformed_event', error, {
           correlationId: record.messageId,
@@ -210,16 +253,27 @@ export function createChannelWorkerHandler(
         throw error;
       }
 
-      await deliverChannelMessage(ddb, tableName, {
+      const common = {
         deptId,
         dispatchId: envelope.dispatchId,
         memberId: envelope.memberId,
         channel,
-        toneSequence: envelope.toneSequence,
         contactChannels,
-        message: `${envelope.incidentType} — ${envelope.address}`,
         env: process.env,
-      });
+        isTest: envelope.isTest,
+      };
+      const incidentText = `${envelope.incidentType} — ${envelope.address}`;
+      await deliverChannelMessage(
+        ddb,
+        tableName,
+        'alertKind' in envelope
+          ? {
+              ...common,
+              alertKind: 'mutual_aid_prompt',
+              message: `MUTUAL AID REQUESTED — ${incidentText}`,
+            }
+          : { ...common, toneSequence: envelope.toneSequence, message: incidentText },
+      );
     }
 
     const results = await Promise.allSettled(event.Records.map(processRecord));

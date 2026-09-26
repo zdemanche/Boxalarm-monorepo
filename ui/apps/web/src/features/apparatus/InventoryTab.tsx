@@ -22,6 +22,12 @@ export function InventoryTab({ apparatusId }: { apparatusId: string }) {
   const auth = useAuth();
   const queryClient = useQueryClient();
   const [form, setForm] = useState(emptyForm);
+  const [quantityError, setQuantityError] = useState<{ itemId: string; message: string } | null>(
+    null,
+  );
+  // Bumped on a failed save so the uncontrolled quantity input remounts with the last
+  // persisted value instead of keeping the unsaved number on screen.
+  const [quantityResetNonce, setQuantityResetNonce] = useState(0);
 
   const query = useQuery({
     queryKey: ['apparatus', apparatusId, 'inventory'],
@@ -40,7 +46,15 @@ export function InventoryTab({ apparatusId }: { apparatusId: string }) {
     mutationFn: (input: { itemId: string; quantity: number }) =>
       updateInventoryQuantity(auth, apparatusId, input.itemId, input.quantity),
     onSuccess: () => {
+      setQuantityError(null);
       void queryClient.invalidateQueries({ queryKey: ['apparatus', apparatusId, 'inventory'] });
+    },
+    onError: (error: Error, input) => {
+      setQuantityError({
+        itemId: input.itemId,
+        message: `Quantity not saved: ${error.message}`,
+      });
+      setQuantityResetNonce((n) => n + 1);
     },
   });
 
@@ -60,10 +74,12 @@ export function InventoryTab({ apparatusId }: { apparatusId: string }) {
       sortValue: (i) => i.quantity,
       render: (i) => (
         <TextInput
+          key={`${i.itemId}-${quantityResetNonce}`}
           label={`Quantity for ${i.itemName}`}
           type="number"
           min="0"
           defaultValue={i.quantity}
+          error={quantityError?.itemId === i.itemId ? quantityError.message : undefined}
           style={{ width: 80 }}
           onBlur={(e) => {
             const quantity = Number(e.target.value);

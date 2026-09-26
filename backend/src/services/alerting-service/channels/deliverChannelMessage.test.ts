@@ -52,6 +52,7 @@ describe('deliverChannelMessage', () => {
       'tok-1',
       baseParams.message,
       baseParams.env,
+      { isTest: false },
     );
   });
 
@@ -119,6 +120,41 @@ describe('deliverChannelMessage', () => {
     errorSpy.mockRestore();
   });
 
+  it('emits SendFailed under the Reason=<channel> dimension the infra delivery-failure alarm watches', async () => {
+    const send = vi.fn().mockResolvedValue({});
+    mockAdapter(vi.fn().mockRejectedValue(new Error('push provider down')));
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    const { deliverChannelMessage } = await import('./deliverChannelMessage.js');
+
+    await expect(
+      deliverChannelMessage(fakeDdb(send), 'alerting-table', baseParams),
+    ).rejects.toThrow('push provider down');
+
+    // infrastructure/components/alerting/alarms.ts alarms on
+    // Boxalarm/AlertingChannel SendFailed with dimensions { Reason: channel }.
+    const emf = logSpy.mock.calls
+      .map(([line]) => {
+        try {
+          return JSON.parse(String(line)) as Record<string, unknown>;
+        } catch {
+          return undefined;
+        }
+      })
+      .find((entry) => entry !== undefined && 'SendFailed' in entry) as
+      | {
+          _aws: { CloudWatchMetrics: { Namespace: string; Dimensions: string[][] }[] };
+          Reason: string;
+        }
+      | undefined;
+    expect(emf).toBeDefined();
+    expect(emf!._aws.CloudWatchMetrics[0]!.Namespace).toBe('Boxalarm/AlertingChannel');
+    expect(emf!._aws.CloudWatchMetrics[0]!.Dimensions).toContainEqual(['Reason']);
+    expect(emf!.Reason).toBe('push');
+    errorSpy.mockRestore();
+    logSpy.mockRestore();
+  });
+
   it('re-attempts the send on redelivery when the prior claim failed and was never delivered (P8 regression)', async () => {
     const send = vi.fn().mockImplementation((command: { constructor: { name: string } }) => {
       const name = command.constructor.name;
@@ -145,6 +181,7 @@ describe('deliverChannelMessage', () => {
       'tok-1',
       baseParams.message,
       baseParams.env,
+      { isTest: false },
     );
     const updateCall = send.mock.calls.find(
       (call) => (call[0] as { constructor: { name: string } }).constructor.name === 'UpdateCommand',

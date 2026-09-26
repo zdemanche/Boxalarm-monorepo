@@ -3,7 +3,9 @@
 // this repo's; this models just enough of its contract for the sync-status banner and per-screen
 // offline states to be built now and activate without a UI rewrite once @boxalarm/core ships.
 
-export type SyncItemStatus = 'QUEUED' | 'SYNCING' | 'FAILED';
+// FAILED = transient, retried automatically with backoff; REJECTED = terminal server refusal
+// (4xx), kept until the user retries or discards it.
+export type SyncItemStatus = 'QUEUED' | 'SYNCING' | 'FAILED' | 'REJECTED';
 
 // kind mirrors the outbox entry's underlying entity type (CHECKLIST_RUN, DEFECT, AVAILABILITY,
 // SHIFT_CLAIM, ...) so a failed-item row can show what actually failed, not just "an item."

@@ -67,7 +67,7 @@ async function getTranscriptInner(
         memberId,
         correlationId: traceId,
       }),
-      listMemberAttendanceRecords(client, readTrainingConfig(process.env), memberId),
+      listMemberAttendanceRecords(client, readTrainingConfig(process.env), deptId, memberId),
     ]);
 
     const transcript = buildTranscript(

@@ -2,21 +2,13 @@ import { useQuery } from '@tanstack/react-query';
 import { Navigate } from 'react-router-dom';
 import { spacing, typography } from '@boxalarm/design-tokens';
 import { useAuth, type Role } from '../auth/AuthContext';
+import { primaryRole } from '../auth/roles';
 import { canAccessPath, firstGrantedNavPath } from '../routing/routeTable';
 import { listApparatus } from '../features/apparatus/api';
 import { listMembers } from '../features/personnel/api';
 import { ApiForbiddenGate } from '../components/ApiForbiddenGate';
 import { Card, Stat } from '../components/ui/Card';
 import styles from './LandingPage.module.css';
-
-const ROLE_PRIORITY: readonly Role[] = [
-  'CHIEF',
-  'ADMIN',
-  'OFFICER',
-  'TRAINING',
-  'APPARATUS',
-  'MEMBER',
-];
 
 const ROLE_LABEL: Record<Role, string> = {
   CHIEF: 'Chief dashboard',
@@ -28,12 +20,8 @@ const ROLE_LABEL: Record<Role, string> = {
 };
 
 // Command-console dashboards are shown for roles that manage the department; a plain member's
-// home stays a simple summary (design.draft.md §4.4 — member read-only scope).
+// home stays a simple summary (docs/design.md §4.4 — member read-only scope).
 const DASHBOARD_ROLES: readonly Role[] = ['CHIEF', 'ADMIN', 'OFFICER', 'APPARATUS'];
-
-function primaryRole(roles: Role[]): Role {
-  return ROLE_PRIORITY.find((role) => roles.includes(role)) ?? 'MEMBER';
-}
 
 function CommandConsole() {
   const auth = useAuth();

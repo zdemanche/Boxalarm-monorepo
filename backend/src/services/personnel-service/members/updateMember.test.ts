@@ -119,6 +119,82 @@ describe('updateMember handler', () => {
     expect(docSend).not.toHaveBeenCalled();
   });
 
+  describe('self-service vs admin edits (MAJ-4, F2.6)', () => {
+    // Mirrors the deployed Cedar policies for a MEMBER: SelfUpdateMember is in the
+    // every-role self-service policy; UpdateMember stays CHIEF/ADMIN-only.
+    function memberVpClient() {
+      const send = vi.fn((command: { input: { action: { actionId: string } } }) =>
+        Promise.resolve({
+          decision:
+            command.input.action.actionId === 'SelfUpdateMember' ? Decision.ALLOW : Decision.DENY,
+        }),
+      );
+      return { client: { send } as unknown as VerifiedPermissionsClient, send };
+    }
+
+    it('lets a MEMBER update their own profile under SelfUpdateMember', async () => {
+      const { createHandler } = await import('./updateMember.js');
+      const docSend = vi.fn().mockResolvedValue({});
+      const vp = memberVpClient();
+      const wrapped = createHandler({ client: fakeDocClient(docSend), vpClient: vp.client });
+
+      const result = await wrapped(
+        buildEvent(
+          'mbr-1',
+          JSON.stringify({ phone: '555-0100' }),
+          { authorization: 'Bearer token' },
+          SELF,
+        ),
+      );
+
+      expect(result).toMatchObject({ statusCode: 200 });
+      expect(vp.send.mock.calls[0]?.[0].input.action.actionId).toBe('SelfUpdateMember');
+      expect(docSend).toHaveBeenCalledOnce();
+    });
+
+    it("403s a MEMBER editing another member's profile (UpdateMember) without touching DynamoDB", async () => {
+      const { createHandler } = await import('./updateMember.js');
+      const docSend = vi.fn();
+      const vp = memberVpClient();
+      const wrapped = createHandler({ client: fakeDocClient(docSend), vpClient: vp.client });
+
+      const result = await wrapped(
+        buildEvent(
+          'mbr-2',
+          JSON.stringify({ phone: '555-0100' }),
+          { authorization: 'Bearer token' },
+          SELF,
+        ),
+      );
+
+      expect(result).toMatchObject({ statusCode: 403 });
+      expect(vp.send.mock.calls[0]?.[0].input.action.actionId).toBe('UpdateMember');
+      expect(docSend).not.toHaveBeenCalled();
+    });
+
+    it("lets an admin (UpdateMember ALLOW) edit another member's profile", async () => {
+      const { createHandler } = await import('./updateMember.js');
+      const docSend = vi.fn().mockResolvedValue({});
+      const vp = fakeVpClient('ALLOW');
+      const wrapped = createHandler({ client: fakeDocClient(docSend), vpClient: vp });
+
+      const result = await wrapped(
+        buildEvent(
+          'mbr-2',
+          JSON.stringify({ phone: '555-0100' }),
+          { authorization: 'Bearer token' },
+          { ...SELF, 'cognito:groups': 'CHIEF' },
+        ),
+      );
+
+      expect(result).toMatchObject({ statusCode: 200 });
+      const vpInput = (vp.send as ReturnType<typeof vi.fn>).mock.calls[0]?.[0] as {
+        input: { action: { actionId: string } };
+      };
+      expect(vpInput.input.action.actionId).toBe('UpdateMember');
+    });
+  });
+
   it('returns 503 (fail-closed) and never touches DynamoDB when Verified Permissions is unavailable', async () => {
     const { createHandler } = await import('./updateMember.js');
     const docSend = vi.fn();

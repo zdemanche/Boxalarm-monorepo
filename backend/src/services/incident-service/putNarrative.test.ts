@@ -75,6 +75,7 @@ describe('putNarrative handler', () => {
       'NICHOLS-4471-1798000000',
       'Smoke showing from second floor, extinguished.',
       expect.any(Number),
+      'req-1',
     );
   });
 

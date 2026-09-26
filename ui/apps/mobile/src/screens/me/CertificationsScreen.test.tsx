@@ -24,3 +24,9 @@ test('a current certification renders its status in the success color', async ()
   const [currentLabel] = await findAllByText('Current');
   expect(currentLabel).toHaveStyle({ color: palette.day.success });
 });
+
+test('signed-out fallback data is labelled as sample data (M6)', async () => {
+  const { findByText } = await render(<CertificationsScreen />);
+
+  expect(await findByText('Sample data. Sign in to see your certifications.')).toBeTruthy();
+});

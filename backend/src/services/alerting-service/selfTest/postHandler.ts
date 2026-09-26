@@ -129,8 +129,8 @@ async function postSelfTest(
 }
 
 export const handler = withAuthorization(postSelfTest, {
-  actionType: 'MEMBER',
+  actionType: 'Boxalarm::Action',
   actionId: 'SelfTestAlertPath',
-  resourceType: 'MEMBER',
+  resourceType: 'Boxalarm::Member',
   resourceId: (event) => event.requestContext.authorizer?.lambda?.sub ?? '',
 });

@@ -82,6 +82,16 @@ function findByApparatusId(apparatusId: string): Apparatus | undefined {
   return apparatus.find((a) => a.apparatusId === apparatusId);
 }
 
+function findByUnitId(unitId: string): Apparatus | undefined {
+  return apparatus.find((a) => a.unitId === unitId);
+}
+
+// Mirrors which identifier each real apparatus-service handler resolves its `{unitId}` path
+// segment by: detail, checklist, service-status, SCBA and test-record writes look the unit up by
+// its display unitId (GSI3); maintenance and inventory use the segment directly as the
+// apparatusId partition key.
+const SUB_RESOURCES_KEYED_BY_APPARATUS_ID = new Set(['maintenance', 'inventory']);
+
 // Mirrors the real backend (repository.ts): elapsedSeconds is derived from startAt at read
 // time, not stored, so it stays correct across a long-lived demo session.
 function withLiveElapsed(unit: Apparatus): Apparatus {
@@ -157,13 +167,16 @@ export async function apparatusDemoRequest(
   }
 
   if (parts.length === 2 && method === 'GET') {
-    const unit = findByApparatusId(decodeURIComponent(parts[1] ?? ''));
+    const unit = findByUnitId(decodeURIComponent(parts[1] ?? ''));
     return unit ? json(toDetail(unit)) : problem(404, 'Apparatus not found');
   }
 
-  const apparatusId = decodeURIComponent(parts[1] ?? '');
-  const unit = findByApparatusId(apparatusId);
+  const segment = decodeURIComponent(parts[1] ?? '');
+  const unit = SUB_RESOURCES_KEYED_BY_APPARATUS_ID.has(parts[2] ?? '')
+    ? findByApparatusId(segment)
+    : findByUnitId(segment);
   if (!unit) return problem(404, 'Apparatus not found');
+  const apparatusId = unit.apparatusId;
 
   if (parts[2] === 'checklist' && method === 'GET') {
     return json(checklistTemplate);
@@ -254,7 +267,7 @@ export async function apparatusDemoRequest(
     return json(item, 201);
   }
 
-  if (parts[2] === 'inventory' && parts[4] === 'quantity' && method === 'PUT') {
+  if (parts[2] === 'inventory' && parts.length === 4 && method === 'PUT') {
     const itemId = decodeURIComponent(parts[3] ?? '');
     const groups = inventoryByUnit.get(apparatusId) ?? [];
     for (const group of groups) {

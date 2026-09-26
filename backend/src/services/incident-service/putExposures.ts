@@ -1,13 +1,12 @@
 import type { APIGatewayProxyHandlerV2WithLambdaAuthorizer } from 'aws-lambda';
 import { assertNoDelimiter } from '@boxalarm/dept-scope';
 import type { AuthorizerContext } from '../platform-service/authorizer/handler.js';
-import type { IncidentEvent } from './authContext.js';
 import {
+  RequestValidationError,
   emitIncidentMetric,
   nowEpochSeconds,
   problemResponse,
-  readAuthorizerContext,
-  resolveTraceId,
+  readIncidentWriteRequest,
 } from './authContext.js';
 import { getDocumentClient, getIncidentRepository, getTableName } from './repository.js';
 import { putIncidentSecondary } from './secondaryRepository.js';
@@ -19,47 +18,28 @@ import {
   validateSecondaryFields,
 } from './schemaVersion/validateEnum.js';
 
-class ValidationError extends Error {}
-
 interface ParsedExposureInput {
   readonly secondaryType: string;
   readonly payload: Record<string, string>;
   readonly affectedMemberIds: readonly string[];
 }
 
-function parseInput(event: IncidentEvent): ParsedExposureInput {
-  if (!event.body) {
-    throw new ValidationError('request body is required');
-  }
-  const raw = event.isBase64Encoded
-    ? Buffer.from(event.body, 'base64').toString('utf8')
-    : event.body;
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(raw);
-  } catch {
-    throw new ValidationError('request body must be valid JSON');
-  }
-  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
-    throw new ValidationError('request body must be a JSON object');
-  }
-  const record = parsed as Record<string, unknown>;
-
+function parseInput(record: Record<string, unknown>): ParsedExposureInput {
   const secondaryType = record.secondaryType;
   if (typeof secondaryType !== 'string' || secondaryType.trim().length === 0) {
-    throw new ValidationError('secondaryType is required and must be a non-empty string');
+    throw new RequestValidationError('secondaryType is required and must be a non-empty string');
   }
   assertNoDelimiter(secondaryType, 'secondaryType');
 
   const payload = record.payload;
   if (typeof payload !== 'object' || payload === null || Array.isArray(payload)) {
-    throw new ValidationError('payload is required and must be a JSON object');
+    throw new RequestValidationError('payload is required and must be a JSON object');
   }
   const payloadRecord = payload as Record<string, unknown>;
   const stringPayload: Record<string, string> = {};
   for (const [key, value] of Object.entries(payloadRecord)) {
     if (typeof value !== 'string') {
-      throw new ValidationError(`payload field "${key}" must be a string`);
+      throw new RequestValidationError(`payload field "${key}" must be a string`);
     }
     stringPayload[key] = value;
   }
@@ -69,7 +49,9 @@ function parseInput(event: IncidentEvent): ParsedExposureInput {
     !Array.isArray(affectedMemberIds) ||
     !affectedMemberIds.every((id) => typeof id === 'string')
   ) {
-    throw new ValidationError('affectedMemberIds is required and must be an array of strings');
+    throw new RequestValidationError(
+      'affectedMemberIds is required and must be an array of strings',
+    );
   }
 
   return { secondaryType, payload: stringPayload, affectedMemberIds };
@@ -78,53 +60,11 @@ function parseInput(event: IncidentEvent): ParsedExposureInput {
 export const handler: APIGatewayProxyHandlerV2WithLambdaAuthorizer<AuthorizerContext> = async (
   event,
 ) => {
-  const traceId = resolveTraceId(event.headers, event.requestContext.requestId);
-
-  let deptId;
-  try {
-    ({ deptId } = readAuthorizerContext(event));
-  } catch (error) {
-    console.error(
-      JSON.stringify({
-        event: 'incident.exposures.denied',
-        correlationId: traceId,
-        message: error instanceof Error ? error.message : undefined,
-      }),
-    );
-    return problemResponse(
-      401,
-      'Unauthorized',
-      'A valid department-scoped authorization context is required.',
-      traceId,
-    );
+  const request = readIncidentWriteRequest(event, 'incident.exposures.denied', parseInput);
+  if (!request.ok) {
+    return request.response;
   }
-
-  const incidentId = event.pathParameters?.incidentId;
-  if (!incidentId) {
-    return problemResponse(400, 'Bad Request', 'incidentId path parameter is required.', traceId);
-  }
-  try {
-    assertNoDelimiter(incidentId, 'incidentId');
-  } catch (error) {
-    return problemResponse(
-      400,
-      'Bad Request',
-      error instanceof Error ? error.message : 'incidentId path parameter is invalid.',
-      traceId,
-    );
-  }
-
-  let input: ParsedExposureInput;
-  try {
-    input = parseInput(event);
-  } catch (error) {
-    return problemResponse(
-      400,
-      'Bad Request',
-      error instanceof ValidationError ? error.message : 'invalid request body',
-      traceId,
-    );
-  }
+  const { traceId, deptId, incidentId, input: input } = request;
 
   try {
     const repository = getIncidentRepository(process.env);
@@ -166,18 +106,13 @@ export const handler: APIGatewayProxyHandlerV2WithLambdaAuthorizer<AuthorizerCon
 
     const errors = validateSecondaryFields(secondarySchema, input.secondaryType, input.payload);
     if (errors.length > 0) {
-      return {
-        statusCode: 400,
-        headers: { 'Content-Type': 'application/problem+json' },
-        body: JSON.stringify({
-          type: 'about:blank',
-          title: 'Bad Request',
-          status: 400,
-          detail: 'One or more fields failed NERIS Secondary enumeration validation.',
-          traceId,
-          errors,
-        }),
-      };
+      return problemResponse(
+        400,
+        'Bad Request',
+        'One or more fields failed NERIS Secondary enumeration validation.',
+        traceId,
+        { errors },
+      );
     }
 
     const missing = missingRequiredSecondaryFields(
@@ -186,13 +121,19 @@ export const handler: APIGatewayProxyHandlerV2WithLambdaAuthorizer<AuthorizerCon
       input.payload,
     );
     const updatedAt = nowEpochSeconds();
-    await putIncidentSecondary(client, tableName, deptId, {
-      incidentId,
-      secondaryType: input.secondaryType,
-      payload: input.payload,
-      affectedMemberIds: input.affectedMemberIds,
-      updatedAt,
-    });
+    await putIncidentSecondary(
+      client,
+      tableName,
+      deptId,
+      {
+        incidentId,
+        secondaryType: input.secondaryType,
+        payload: input.payload,
+        affectedMemberIds: input.affectedMemberIds,
+        updatedAt,
+      },
+      traceId,
+    );
 
     emitIncidentMetric('IncidentSecondaryUpdated');
     return {

@@ -26,6 +26,7 @@ export class OutboxPublisher extends pulumi.ComponentResource {
   public readonly onFailureQueue: aws.sqs.Queue;
   public readonly eventSourceMapping: aws.lambda.EventSourceMapping;
   public readonly onFailureAlarm: aws.cloudwatch.MetricAlarm;
+  public readonly onFailureSendPolicy: aws.iam.RolePolicy;
 
   constructor(name: string, args: OutboxPublisherArgs, opts?: pulumi.ComponentResourceOptions) {
     requireEnv("OutboxPublisher", args.env);
@@ -85,6 +86,11 @@ export class OutboxPublisher extends pulumi.ComponentResource {
         startingPosition: "LATEST",
         batchSize: 10,
         bisectBatchOnFunctionError: true,
+        // The shared drain handler reports a failed PutEvents by RETURNING
+        // batchItemFailures, not by throwing. Without this flag Lambda ignores that
+        // response, counts the batch as successful and advances past the failed
+        // records, so events that were never published are lost.
+        functionResponseTypes: ["ReportBatchItemFailures"],
         // Stream-mapping defaults are UNBOUNDED (-1) retry attempts and record age.
         // Because PutEvents runs before the (previously-denied) sentAt UpdateItem,
         // an unbounded retry re-published every event in the batch on every retry —
@@ -125,6 +131,30 @@ export class OutboxPublisher extends pulumi.ComponentResource {
                   "dynamodb:ListStreams",
                 ],
                 Resource: streamArn,
+              },
+            ],
+          }),
+        ),
+      },
+      { parent: this },
+    );
+
+    // The mapping's on-failure destination is written by the Lambda service using
+    // this function's execution role. Without SendMessage, records that exhaust their
+    // retries are dropped instead of landing on the alarmed queue.
+    this.onFailureSendPolicy = new aws.iam.RolePolicy(
+      `${name}-onfailure-send-policy`,
+      {
+        role: this.lambda.role.id,
+        policy: this.onFailureQueue.arn.apply((queueArn) =>
+          JSON.stringify({
+            Version: "2012-10-17",
+            Statement: [
+              {
+                Sid: "SendToOnFailureQueue",
+                Effect: "Allow",
+                Action: ["sqs:SendMessage"],
+                Resource: queueArn,
               },
             ],
           }),

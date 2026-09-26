@@ -1,4 +1,4 @@
-import { render } from '@testing-library/react-native';
+import { act, fireEvent, render, waitFor } from '@testing-library/react-native';
 import { useOptionalAuth, type AuthContextValue } from '../../auth/AuthContext';
 import { apiRequest } from '../../lib/apiClient';
 import { NotificationPreferencesScreen } from './NotificationPreferencesScreen';
@@ -59,4 +59,30 @@ test('shows an error message instead of hanging when the preferences fetch fails
   expect(alert.props.children).toBe(
     'Notification preferences could not be loaded. Check your connection and try again.',
   );
+});
+
+test('a failed save reverts the optimistic toggle and tells the member (M11)', async () => {
+  mockApiRequest.mockImplementation(async (path: string, _tokens: unknown, init?: RequestInit) => {
+    if (path === 'notifications/preferences' && init?.method === 'PUT') {
+      throw new Error('network error');
+    }
+    return {
+      json: async () => ({
+        preferences: [{ category: 'CERT_EXPIRY', channels: { push: true, email: true } }],
+      }),
+    };
+  });
+
+  const { findByLabelText, findByRole } = await render(<NotificationPreferencesScreen />);
+  const toggle = await findByLabelText('Certification expiry push notifications');
+  await waitFor(() => expect(toggle.props.value).toBe(true));
+
+  await act(async () => {
+    fireEvent(toggle, 'valueChange', false);
+  });
+
+  expect((await findByRole('alert')).props.children).toBe(
+    'Your change was not saved. Check your connection and try again.',
+  );
+  expect((await findByLabelText('Certification expiry push notifications')).props.value).toBe(true);
 });

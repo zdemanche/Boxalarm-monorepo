@@ -197,6 +197,13 @@ export function canAccessPath(pathname: string, userRoles: readonly Role[]): boo
   return match.roles.some((r) => userRoles.includes(r));
 }
 
+/** The nav entry a pathname belongs to: `/apparatus/compliance` -> `/apparatus/compliance`,
+ * `/apparatus/E1` -> `/apparatus`. Used for the nav's active state, so a nested nav route
+ * doesn't also light up its parent (PR #321 review m4). */
+export function activeNavPathFor(pathname: string): string | null {
+  return APP_ROUTES.find((route) => pathMatches(route.path, pathname))?.navPath ?? null;
+}
+
 export function firstGrantedNavPath(userRoles: readonly Role[]): string | null {
   const routes = routesForRoles(userRoles);
   return routes[0]?.navPath ?? null;

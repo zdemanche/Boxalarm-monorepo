@@ -40,6 +40,8 @@ import { ChiefNotificationTopic } from "./components/shared/chief-notifications"
 import { Reporting } from "./components/reporting/reporting";
 import { Incident } from "./components/incident/incident";
 import { SchemaRefresh } from "./components/incident/schema-refresh";
+import { IncidentOutboxDrain } from "./components/incident/outbox-drain";
+import { NerisSubmissionWorker } from "./components/incident/submission-worker";
 import { AlertingPlaneBoundary } from "./components/alerting/iam-boundary";
 import { MessagingAlerting } from "./components/alerting/messaging-alerting";
 import { Escalation } from "./components/alerting/escalation";
@@ -52,6 +54,7 @@ import { RidingBoard } from "./components/alerting/riding-board";
 import { AlertingAlarms } from "./components/alerting/alarms";
 import { EligibilityStaleness } from "./components/alerting/staleness";
 import { AlertingCanary } from "./components/alerting/canary";
+import { AlertingOutboxDrain } from "./components/alerting/outbox-drain";
 
 export const stack = getStack();
 const config = new Config("boxalarm-infra");
@@ -159,9 +162,7 @@ export const auditTrail = new AuditTrail("audit-trail", {
 export const alertingPlaneBoundary = new AlertingPlaneBoundary("alerting-plane-boundary", {
   env,
   platformTableArn: platformTable.tableArn,
-  platformStreamArn: platformTable.streamArn,
   incidentTableArn: incidentTable.tableArn,
-  incidentStreamArn: incidentTable.streamArn,
 });
 const alertingBoundaryArn = alertingPlaneBoundary.policy.arn;
 
@@ -229,6 +230,7 @@ export const personnelQuals = new Quals("personnel-quals", {
   httpApi,
   platformBus,
   alertingTableArn: alertingTable.tableArn,
+  alertingCmkArn: alertingTable.cmkArn,
   alertingTableName: alertingTable.tableName,
   alertingLogGroup,
   alertingPermissionsBoundaryArn: alertingBoundaryArn,
@@ -254,6 +256,7 @@ export const personnelAvailability = new Availability("personnel-availability", 
   httpApi,
   platformBus,
   alertingTableArn: alertingTable.tableArn,
+  alertingCmkArn: alertingTable.cmkArn,
   alertingTableName: alertingTable.tableName,
   alertingLogGroup,
   alertingPermissionsBoundaryArn: alertingBoundaryArn,
@@ -421,6 +424,33 @@ export const incident = new Incident("incident", {
   httpApi,
 });
 
+// Incident-table outbox → platform-bus. The platform OutboxPublisher only reads the
+// platform table's stream; without this, incident-service OUTBOX_ENTRY rows are never
+// published.
+export const incidentOutboxDrain = new IncidentOutboxDrain("incident-outbox-drain", {
+  env,
+  incidentTableName: incidentTable.tableName,
+  incidentTableArn: incidentTable.tableArn,
+  incidentTableStreamArn: incidentTable.streamArn,
+  incidentCmkArn: incidentTable.cmkArn,
+  busName: platformBus.busName,
+  busArn: platformBus.busArn,
+  logGroup: incidentServiceLogGroup,
+});
+
+// NERIS submission worker: consumes neris.incident.submitted off the platform bus and
+// schedules its own backoff retries via EventBridge Scheduler.
+export const nerisSubmissionWorker = new NerisSubmissionWorker("neris-submission-worker", {
+  env,
+  incidentTableName: incidentTable.tableName,
+  incidentTableArn: incidentTable.tableArn,
+  incidentCmkArn: incidentTable.cmkArn,
+  busName: platformBus.busName,
+  busArn: platformBus.busArn,
+  nerisCredentialsSecretArn: nerisConfig.secret.arn,
+  logGroup: incidentServiceLogGroup,
+});
+
 // E1-S2/S3-INFRA #28/#29: alerting messaging plane — SNS FIFO topic + per-channel SQS
 // FIFO queues/DLQs. Shares no resource with the LOB bus.
 export const messagingAlerting = new MessagingAlerting("messaging-alerting", { env });
@@ -428,6 +458,7 @@ export const messagingAlerting = new MessagingAlerting("messaging-alerting", { e
 export const escalation = new Escalation("escalation", {
   env,
   alertingTableArn: alertingTable.tableArn,
+  alertingCmkArn: alertingTable.cmkArn,
   alertingTopicArn: messagingAlerting.topic.arn,
   alertingTableName: alertingTable.tableName,
   logGroup: alertingLogGroup,
@@ -437,6 +468,7 @@ export const escalation = new Escalation("escalation", {
 export const fanOut = new FanOut("fan-out", {
   env,
   alertingTableArn: alertingTable.tableArn,
+  alertingCmkArn: alertingTable.cmkArn,
   alertingTableName: alertingTable.tableName,
   alertingStreamArn: alertingTable.streamArn,
   alertingTopicArn: messagingAlerting.topic.arn,
@@ -448,6 +480,7 @@ export const fanOut = new FanOut("fan-out", {
 export const channelWorkers = new ChannelWorkers("channel-workers", {
   env,
   alertingTableArn: alertingTable.tableArn,
+  alertingCmkArn: alertingTable.cmkArn,
   alertingTableName: alertingTable.tableName,
   channelQueues: messagingAlerting.channelQueues,
   logGroup: alertingLogGroup,
@@ -459,6 +492,7 @@ export const routesCore = new RoutesCore("routes-core", {
   env,
   httpApi,
   alertingTableArn: alertingTable.tableArn,
+  alertingCmkArn: alertingTable.cmkArn,
   alertingTableName: alertingTable.tableName,
   logGroup: alertingLogGroup,
   escalation,
@@ -471,6 +505,7 @@ export const routesOps = new RoutesOps("routes-ops", {
   env,
   httpApi,
   alertingTableArn: alertingTable.tableArn,
+  alertingCmkArn: alertingTable.cmkArn,
   alertingTableName: alertingTable.tableName,
   logGroup: alertingLogGroup,
   policyStoreId: policyStore.policyStoreId,
@@ -485,6 +520,7 @@ export const pushTokens = new PushTokens("push-tokens", {
   platformTableArn: platformTable.tableArn,
   platformTableName: platformTable.tableName,
   alertingTableArn: alertingTable.tableArn,
+  alertingCmkArn: alertingTable.cmkArn,
   alertingTableName: alertingTable.tableName,
   personnelLogGroup,
   alertingLogGroup,
@@ -507,6 +543,12 @@ export const ridingBoard = new RidingBoard("riding-board", {
 export const alertingAlarms = new AlertingAlarms("alerting-alarms", {
   env,
   channelQueues: messagingAlerting.channelQueues,
+  fanOutFunctionName: fanOut.lambda.function.name,
+  fanOutOnFailureQueue: fanOut.onFailureQueue,
+  escalationFunctionName: escalation.lambda.function.name,
+  toneEvaluatorFunctionName: escalation.toneEvaluatorLambda.function.name,
+  memberUpdatedDlq: pushTokens.memberUpdatedDlq,
+  memberUpdatedFunctionName: pushTokens.memberUpdatedConsumer.function.name,
 });
 
 // E1-S13-INFRA #38: eligibility-snapshot staleness schedule + alarm.
@@ -514,6 +556,7 @@ export const eligibilityStaleness = new EligibilityStaleness("eligibility-stalen
   env,
   deptId,
   alertingTableArn: alertingTable.tableArn,
+  alertingCmkArn: alertingTable.cmkArn,
   alertingTableName: alertingTable.tableName,
   pageTopicArn: alertingAlarms.pageTopic.arn,
   logGroup: alertingLogGroup,
@@ -525,8 +568,24 @@ export const alertingCanary = new AlertingCanary("alerting-canary", {
   env,
   deptId,
   alertingTableArn: alertingTable.tableArn,
+  alertingCmkArn: alertingTable.cmkArn,
   alertingTableName: alertingTable.tableName,
   pageTopicArn: alertingAlarms.pageTopic.arn,
+  logGroup: alertingLogGroup,
+  permissionsBoundaryArn: alertingBoundaryArn,
+});
+
+// PR #324 follow-up: alerting-table outbox -> platform-bus bridge (the allow-listed,
+// one-way path incident-service's dispatch/roster consumers depend on).
+export const alertingOutboxDrain = new AlertingOutboxDrain("alerting-outbox-drain", {
+  pageTopicArn: alertingAlarms.pageTopic.arn,
+  env,
+  alertingTableName: alertingTable.tableName,
+  alertingTableArn: alertingTable.tableArn,
+  alertingStreamArn: alertingTable.streamArn,
+  alertingCmkArn: alertingTable.cmkArn,
+  busName: platformBus.busName,
+  busArn: platformBus.busArn,
   logGroup: alertingLogGroup,
   permissionsBoundaryArn: alertingBoundaryArn,
 });

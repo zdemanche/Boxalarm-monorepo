@@ -3,7 +3,7 @@ import { HttpApi } from "../api/http-api";
 import { ServiceLogGroup } from "../observability/service-log-group";
 import { requireEnv } from "../shared/env";
 import { lambdaCode, LAMBDA_HANDLER } from "../shared/lambda-code";
-import { AlertingRoute } from "./route-lambda";
+import { AlertingRoute, verifiedPermissionsStatement } from "./route-lambda";
 
 export interface RidingBoardArgs {
   env: string;
@@ -37,12 +37,10 @@ export class RidingBoard extends pulumi.ComponentResource {
       PLATFORM_TABLE_NAME: args.platformTableName,
       VERIFIED_PERMISSIONS_POLICY_STORE_ID: args.policyStoreId,
     };
-    const verifiedPermissionsStatement = {
-      Sid: "VerifiedPermissionsIsAuthorized",
-      Effect: "Allow" as const,
-      Action: ["verifiedpermissions:IsAuthorizedWithToken"],
-      Resource: "*",
-    };
+    // Cast like the table ARN below: ServiceLambda deep-resolves nested Outputs.
+    const apparatusIndexArn =
+      pulumi.interpolate`${args.platformTableArn}/index/GSI3` as unknown as string;
+    const vpStatement = verifiedPermissionsStatement();
 
     // src/services/apparatus-service/ridingBoard/handler.getRidingBoardHandler
     this.getRoute = new AlertingRoute(
@@ -64,7 +62,15 @@ export class RidingBoard extends pulumi.ComponentResource {
             Action: ["dynamodb:GetItem", "dynamodb:Query"],
             Resource: args.platformTableArn as string,
           },
-          verifiedPermissionsStatement,
+          {
+            // listApparatusForBoard queries IndexName 'GSI3' (ridingBoard/repository.ts);
+            // a table-ARN grant does not cover an index.
+            Sid: "PlatformTableApparatusIndexQuery",
+            Effect: "Allow",
+            Action: ["dynamodb:Query"],
+            Resource: apparatusIndexArn,
+          },
+          vpStatement,
         ],
         reservedConcurrentExecutions: 5,
       },
@@ -86,12 +92,30 @@ export class RidingBoard extends pulumi.ComponentResource {
         environment,
         additionalPolicyStatements: [
           {
+            // assignSeat's single TransactWriteCommand holds a ConditionCheck (apparatus
+            // IN_SERVICE), an Update (the seat), and two Puts (history + outbox). DynamoDB
+            // authorizes each transaction item as its own action, so all three item
+            // actions are required; TransactWriteItems is kept alongside for clarity.
             Sid: "PlatformTableReadWrite",
             Effect: "Allow",
-            Action: ["dynamodb:GetItem", "dynamodb:Query", "dynamodb:UpdateItem"],
+            Action: [
+              "dynamodb:GetItem",
+              "dynamodb:Query",
+              "dynamodb:ConditionCheckItem",
+              "dynamodb:UpdateItem",
+              "dynamodb:PutItem",
+              "dynamodb:TransactWriteItems",
+            ],
             Resource: args.platformTableArn as string,
           },
-          verifiedPermissionsStatement,
+          {
+            // findApparatusItem (apparatus-service/repository.ts) queries IndexName 'GSI3'.
+            Sid: "PlatformTableApparatusIndexQuery",
+            Effect: "Allow",
+            Action: ["dynamodb:Query"],
+            Resource: apparatusIndexArn,
+          },
+          vpStatement,
         ],
         reservedConcurrentExecutions: 5,
       },

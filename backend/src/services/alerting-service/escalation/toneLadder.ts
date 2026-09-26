@@ -5,6 +5,7 @@ import {
 } from '@aws-sdk/client-scheduler';
 import { GetCommand, type DynamoDBDocumentClient } from '@aws-sdk/lib-dynamodb';
 import { buildDeptScopedPk, type VerifiedDeptId } from '@boxalarm/dept-scope';
+import { readScheduleGroupName } from './scheduleEscalation.js';
 
 export const TONE_SEQUENCE_TWO = 2;
 export const TONE_SEQUENCE_THREE = 3;
@@ -57,6 +58,7 @@ export async function readDepartmentToneConfig(
 export interface ToneEvaluatorSchedulerConfig {
   readonly toneEvaluatorHandlerArn: string;
   readonly schedulerRoleArn: string;
+  readonly scheduleGroupName: string;
 }
 
 export function readToneEvaluatorSchedulerConfig(
@@ -70,7 +72,11 @@ export function readToneEvaluatorSchedulerConfig(
   if (!schedulerRoleArn) {
     throw new Error('ESCALATION_SCHEDULER_ROLE_ARN is required and was not set');
   }
-  return { toneEvaluatorHandlerArn, schedulerRoleArn };
+  return {
+    toneEvaluatorHandlerArn,
+    schedulerRoleArn,
+    scheduleGroupName: readScheduleGroupName(env),
+  };
 }
 
 async function createToneSchedule(
@@ -87,6 +93,7 @@ async function createToneSchedule(
     await scheduler.send(
       new CreateScheduleCommand({
         Name: scheduleName,
+        GroupName: config.scheduleGroupName,
         ScheduleExpression: `at(${new Date(fireAt * 1000).toISOString().slice(0, 19)})`,
         FlexibleTimeWindow: { Mode: FlexibleTimeWindowMode.OFF },
         Target: {

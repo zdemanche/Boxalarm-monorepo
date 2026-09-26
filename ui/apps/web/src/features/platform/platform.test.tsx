@@ -1,11 +1,11 @@
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { HttpResponse, http } from 'msw';
 import { setupServer } from 'msw/node';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import type { User, UserManager } from 'oidc-client-ts';
-import { afterAll, afterEach, beforeAll, beforeEach, expect, test, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, expect, test, vi } from 'vitest';
 import { AuthProvider } from '../../auth/AuthContext';
 import { RequireRole } from '../../routing/RequireRole';
 import { MemberDetailPage } from '../personnel/MemberDetailPage';
@@ -16,7 +16,6 @@ import type { ConfigResponse } from './types';
 
 const server = setupServer();
 beforeAll(() => server.listen());
-beforeEach(() => vi.spyOn(window, 'confirm').mockReturnValue(true));
 afterEach(() => {
   server.resetHandlers();
   cleanup();
@@ -286,6 +285,10 @@ test('a 403 running disposal shows a generic message, not the raw server detail'
   const user = userEvent.setup();
   renderRoute(['ADMIN'], '/settings');
   await user.click(await screen.findByRole('button', { name: 'Run disposal' }));
+  const disposalDialog = await screen.findByRole('dialog', {
+    name: 'Permanently dispose of records older than 7 years?',
+  });
+  await user.click(within(disposalDialog).getByRole('button', { name: 'Run disposal' }));
 
   await waitFor(() => {
     expect(screen.getByText('You do not have access to this page.')).toBeTruthy();
@@ -314,6 +317,10 @@ test('a 403 starting an export shows a generic message, not the raw server detai
   const user = userEvent.setup();
   renderRoute(['ADMIN'], '/settings');
   await user.click(await screen.findByRole('button', { name: 'Export department data' }));
+  const exportDialog = await screen.findByRole('dialog', {
+    name: "Export all of your department's data?",
+  });
+  await user.click(within(exportDialog).getByRole('button', { name: 'Export department data' }));
 
   await waitFor(() => {
     expect(screen.getByText('You do not have access to this page.')).toBeTruthy();
@@ -354,6 +361,10 @@ test('a 403 revoking sessions shows a generic message, not the raw server detail
   renderRoute(['ADMIN'], '/personnel/m1');
   await screen.findByRole('heading', { name: 'Sam Lee' });
   await user.click(screen.getByRole('button', { name: 'Revoke all sessions (lost device)' }));
+  const revokeDialog = await screen.findByRole('dialog', {
+    name: 'Revoke all sessions for Sam Lee?',
+  });
+  await user.click(within(revokeDialog).getByRole('button', { name: 'Revoke sessions' }));
 
   await waitFor(() => {
     expect(screen.getByText('You do not have access to this page.')).toBeTruthy();
@@ -512,8 +523,72 @@ test('admin revokes a member’s sessions from /personnel/:id', async () => {
   renderRoute(['ADMIN'], '/personnel/m1');
   await screen.findByRole('heading', { name: 'Sam Lee' });
   await user.click(screen.getByRole('button', { name: 'Revoke all sessions (lost device)' }));
+  const revokeDialog = await screen.findByRole('dialog', {
+    name: 'Revoke all sessions for Sam Lee?',
+  });
+  await user.click(within(revokeDialog).getByRole('button', { name: 'Revoke sessions' }));
 
   await waitFor(() => {
     expect(screen.getByText('Sessions revoked.')).toBeTruthy();
   });
+});
+
+test('a 400 saving a config lists the RFC 7807 field-level errors (m1)', async () => {
+  server.use(
+    ...settingsDefaultHandlers(),
+    http.put('/api/v1/platform/config/ALERT_RULES', () =>
+      HttpResponse.json(
+        {
+          type: 'about:blank',
+          title: 'Bad Request',
+          status: 400,
+          detail: 'The config value failed validation.',
+          traceId: 't7',
+          errors: [{ field: 'escalationThresholdN', message: 'must be a positive integer' }],
+        },
+        { status: 400 },
+      ),
+    ),
+  );
+
+  const user = userEvent.setup();
+  renderRoute(['ADMIN'], '/settings');
+  const textarea = await screen.findByLabelText('Alert rule timing (JSON)');
+  fireEvent.change(textarea, { target: { value: '{"escalationThresholdN":-1}' } });
+  await user.click(screen.getByRole('button', { name: 'Save Alert rule timing' }));
+
+  expect(await screen.findByText('The config value failed validation.')).toBeTruthy();
+  expect(screen.getByText('escalationThresholdN')).toBeTruthy();
+  expect(screen.getByText(/must be a positive integer/)).toBeTruthy();
+});
+
+test('malformed RFC 7807 errors entries are dropped, not rendered (m1)', async () => {
+  server.use(
+    ...settingsDefaultHandlers(),
+    http.put('/api/v1/platform/config/ALERT_RULES', () =>
+      HttpResponse.json(
+        {
+          type: 'about:blank',
+          title: 'Bad Request',
+          status: 400,
+          detail: 'The config value failed validation.',
+          traceId: 't8',
+          errors: [{ field: 'ok', message: 'is kept' }, { field: 7 }, 'junk'],
+        },
+        { status: 400 },
+      ),
+    ),
+  );
+
+  const user = userEvent.setup();
+  renderRoute(['ADMIN'], '/settings');
+  const textarea = await screen.findByLabelText('Alert rule timing (JSON)');
+  fireEvent.change(textarea, { target: { value: '{"escalationThresholdN":-1}' } });
+  await user.click(screen.getByRole('button', { name: 'Save Alert rule timing' }));
+
+  const alert = (await screen.findByText('The config value failed validation.')).closest(
+    '[role="alert"]',
+  );
+  expect(alert?.querySelectorAll('li').length).toBe(1);
+  expect(screen.getByText(/is kept/)).toBeTruthy();
 });

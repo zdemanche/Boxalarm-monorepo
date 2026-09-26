@@ -13,19 +13,33 @@ afterEach(() => {
   process.env = { ...originalEnv };
 });
 
+/**
+ * A real EventBridge->SQS body: the rule target has no inputPath, so SQS receives the whole
+ * EventBridge event and the outbox envelope is under `detail`.
+ */
 function sqsEvent(payload: Record<string, unknown>, messageId = 'msg-1'): SQSEvent {
   return {
     Records: [
       {
         messageId,
         body: JSON.stringify({
-          eventId: 'evt-1',
-          eventTime: '2026-09-06T00:00:00Z',
-          eventType: 'personnel.availability.changed',
+          version: '0',
+          id: 'eb-evt-1',
+          'detail-type': 'personnel.availability.changed',
           source: 'personnel-service',
-          correlationId: 'mbr-1',
-          schemaVersion: '1.0',
-          payload,
+          account: '123456789012',
+          time: '2026-09-06T00:00:00Z',
+          region: 'us-east-1',
+          resources: [],
+          detail: {
+            eventId: 'evt-1',
+            eventTime: '2026-09-06T00:00:00Z',
+            eventType: 'personnel.availability.changed',
+            source: 'personnel-service',
+            correlationId: 'mbr-1',
+            schemaVersion: '1.0',
+            payload,
+          },
         }),
       },
     ],
@@ -123,6 +137,29 @@ describe('eligibility consumer (entrypoint-test obligation)', () => {
     await expect(handler(sqsEvent({ deptId: 'NICHOLS' }))).rejects.toThrow(
       'personnel.availability.changed event failed shape validation',
     );
+    expect(send).not.toHaveBeenCalled();
+    errorSpy.mockRestore();
+  });
+
+  it('rejects a bare envelope with no EventBridge `detail` wrapper (never what the rule delivers)', async () => {
+    const send = vi.fn();
+    mockDdb(send);
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const { handler } = await import('./consumer.js');
+    const bare = {
+      Records: [
+        {
+          messageId: 'msg-bare',
+          body: JSON.stringify({
+            eventId: 'evt-1',
+            eventTime: '2026-09-06T00:00:00Z',
+            payload: { deptId: 'NICHOLS', memberId: 'mbr-1', availabilityState: 'MARKED_OFF' },
+          }),
+        },
+      ],
+    } as unknown as SQSEvent;
+
+    await expect(handler(bare)).rejects.toThrow('missing detail');
     expect(send).not.toHaveBeenCalled();
     errorSpy.mockRestore();
   });

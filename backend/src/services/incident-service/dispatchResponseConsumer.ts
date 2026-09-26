@@ -1,4 +1,10 @@
-import type { Handler, SQSEvent, SQSRecord } from 'aws-lambda';
+import type {
+  Handler,
+  SQSBatchItemFailure,
+  SQSBatchResponse,
+  SQSEvent,
+  SQSRecord,
+} from 'aws-lambda';
 import type { DynamoDBDocumentClient } from '@aws-sdk/lib-dynamodb';
 import { toVerifiedDeptId, type VerifiedDeptId } from '@boxalarm/dept-scope';
 import { emitOutcomeMetric } from '@boxalarm/metrics';
@@ -92,11 +98,22 @@ async function processRecord(record: SQSRecord, deps: DispatchResponseConsumerDe
   }
 }
 
-export function createHandler(deps: DispatchResponseConsumerDeps = {}): Handler<SQSEvent, void> {
+// Partial batch response: a failing record is reported alone (its error was already
+// logged inside processRecord) so SQS redelivers only that record instead of the whole
+// batch. Requires ReportBatchItemFailures on the event source mapping.
+export function createHandler(
+  deps: DispatchResponseConsumerDeps = {},
+): Handler<SQSEvent, SQSBatchResponse> {
   return async (event) => {
+    const batchItemFailures: SQSBatchItemFailure[] = [];
     for (const record of event.Records) {
-      await processRecord(record, deps);
+      try {
+        await processRecord(record, deps);
+      } catch {
+        batchItemFailures.push({ itemIdentifier: record.messageId });
+      }
     }
+    return { batchItemFailures };
   };
 }
 

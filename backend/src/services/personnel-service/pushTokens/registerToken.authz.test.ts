@@ -73,8 +73,11 @@ describe('registerToken real withAuthorization wiring (P5 regression)', () => {
         resource: { entityType: string; entityId: string };
       };
     };
-    expect(vpCall.input.action).toEqual({ actionType: 'MEMBER', actionId: 'RegisterPushToken' });
-    expect(vpCall.input.resource).toEqual({ entityType: 'MEMBER', entityId: 'mbr-102' });
+    expect(vpCall.input.action).toEqual({
+      actionType: 'Boxalarm::Action',
+      actionId: 'RegisterPushToken',
+    });
+    expect(vpCall.input.resource).toEqual({ entityType: 'Boxalarm::Member', entityId: 'mbr-102' });
 
     vi.doUnmock('../dynamoClient.js');
   });

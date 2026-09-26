@@ -20,7 +20,7 @@ export const PERSONAS: Record<Role, { groups: Role[]; expectedNavLabels: readonl
   },
   TRAINING: {
     groups: ['TRAINING'],
-    expectedNavLabels: ['Personnel', 'Certifications', 'Reporting'],
+    expectedNavLabels: ['Personnel', 'Certifications', 'Training events', 'Reporting'],
   },
   APPARATUS: {
     groups: ['APPARATUS'],
@@ -32,6 +32,7 @@ export const PERSONAS: Record<Role, { groups: Role[]; expectedNavLabels: readonl
       'Alert diagnostics',
       'Personnel',
       'Certifications',
+      'Training events',
       'Schedule',
       'Reporting',
       'Settings',

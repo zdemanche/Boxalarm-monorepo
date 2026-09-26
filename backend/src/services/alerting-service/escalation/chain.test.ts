@@ -99,6 +99,7 @@ describe('E1-S3 chain: fan-out -> schedule -> escalation-fired handler', () => {
     process.env.ALERTING_TABLE_NAME = 'alerting-table';
     process.env.ESCALATION_HANDLER_ARN = 'arn:aws:lambda:us-east-1:1:function:escalation';
     process.env.ESCALATION_SCHEDULER_ROLE_ARN = 'arn:aws:iam::1:role/scheduler';
+    process.env.ESCALATION_SCHEDULE_GROUP_NAME = 'boxalarm-dev-alerting-escalation';
     process.env.ALERTING_TOPIC_ARN = 'arn:aws:sns:us-east-1:1:alerting-topic.fifo';
   });
 
@@ -198,9 +199,9 @@ describe('E1-S3 chain: fan-out -> schedule -> escalation-fired handler', () => {
       smsBefore,
     );
     expect(
-      alerting.items.get('DEPT#NICHOLS#DISPATCH#dispatch-1#RECEIPT#mbr-1#VOICE#1'),
+      alerting.items.get('DEPT#NICHOLS#DISPATCH#dispatch-1#RECEIPT#mbr-1#voice#1'),
     ).toBeDefined();
-    expect(alerting.items.has('DEPT#NICHOLS#DISPATCH#dispatch-1#RECEIPT#mbr-2#VOICE#1')).toBe(
+    expect(alerting.items.has('DEPT#NICHOLS#DISPATCH#dispatch-1#RECEIPT#mbr-2#voice#1')).toBe(
       false,
     );
 

@@ -229,7 +229,7 @@ describe('typeScale', () => {
     expect(display.size).toBeGreaterThan(title.size);
   });
 
-  test('no size is below 12px (design.draft.md §2.4)', () => {
+  test('no size is below 12px (docs/design.md §2.4)', () => {
     for (const step of Object.values(typeScale)) {
       expect(step.size).toBeGreaterThanOrEqual(12);
     }

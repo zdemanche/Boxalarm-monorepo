@@ -7,10 +7,12 @@ import type { SyncQueueStatus } from '../features/sync/types';
 jest.mock('./syncManager', () => ({
   subscribe: jest.fn(),
   retry: jest.fn().mockResolvedValue(undefined),
+  discard: jest.fn().mockResolvedValue(undefined),
 }));
 
 const mockSubscribe = syncManager.subscribe as jest.Mock;
 const mockRetry = syncManager.retry as jest.Mock;
+const mockDiscard = syncManager.discard as jest.Mock;
 
 const QUEUED_AND_FAILED: SyncQueueStatus = {
   items: [
@@ -44,6 +46,7 @@ function mockStatus(status: SyncQueueStatus) {
 beforeEach(() => {
   mockSubscribe.mockReset();
   mockRetry.mockReset().mockResolvedValue(undefined);
+  mockDiscard.mockReset().mockResolvedValue(undefined);
 });
 
 test('shows the queued count and the failed item with a retry action', async () => {
@@ -100,4 +103,44 @@ test('once caught up (no queued or failed items), shows a dismissible last-synce
 
   expect(await findByText(/synced/i)).toBeTruthy();
   expect(await findByRole('button', { name: 'Dismiss' })).toBeTruthy();
+});
+
+const REJECTED: SyncQueueStatus = {
+  items: [
+    {
+      id: 'SYNC-3',
+      kind: 'CHECKLIST_RUN',
+      label: 'Truck check — LADDER-1',
+      status: 'REJECTED',
+      queuedAt: new Date(Date.now() - 10 * 60_000).toISOString(),
+      lastError: 'Checklist template is retired',
+    },
+  ],
+  lastSyncAt: null,
+};
+
+test('a rejected item shows the server reason with retry and discard, and blocks dismissal', async () => {
+  mockStatus(REJECTED);
+  const { findByText, findByRole, queryByRole, queryByText } = await render(<SyncStatusBanner />);
+
+  expect(await findByText(/truck check — ladder-1 was rejected/i)).toBeTruthy();
+  expect(await findByText(/checklist template is retired/i)).toBeTruthy();
+  expect(await findByRole('button', { name: /retry truck check — ladder-1/i })).toBeTruthy();
+  expect(await findByRole('button', { name: /discard truck check — ladder-1/i })).toBeTruthy();
+  expect(queryByText(/waiting to sync/i)).toBeNull();
+  expect(queryByRole('button', { name: 'Dismiss' })).toBeNull();
+});
+
+test('discarding a rejected item calls the sync manager and announces it', async () => {
+  mockStatus(REJECTED);
+  const announceSpy = jest.spyOn(AccessibilityInfo, 'announceForAccessibility');
+  const { findByRole } = await render(<SyncStatusBanner />);
+
+  await act(async () => {
+    fireEvent.press(await findByRole('button', { name: /discard/i }));
+  });
+
+  expect(mockDiscard).toHaveBeenCalledWith('SYNC-3');
+  expect(announceSpy).toHaveBeenCalledWith(expect.stringMatching(/discarded/i));
+  announceSpy.mockRestore();
 });

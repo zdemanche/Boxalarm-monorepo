@@ -129,6 +129,7 @@ describe('canary handler', () => {
         entityType: 'SELF_TEST_RUN',
         overallResult: 'PASS',
         channelResults: { PUSH: { ok: true, ms: 100 } },
+        completedAtMs: (now - 1) * 1000,
       },
     ]);
     const { createDynamoClient } = await import('../eligibility/dynamoClient.js');
@@ -173,6 +174,7 @@ describe('canary handler', () => {
           entityType: 'SELF_TEST_RUN',
           overallResult: 'PASS',
           channelResults: { PUSH: { ok: true, ms: 100 } },
+          completedAtMs: (start - 1) * 1000,
         },
         // A cooldown that is still held (e.g. from a concurrent/retried self-test run) —
         // acquireSelfTestCooldown will fail on startNextRun for both invocations below.
@@ -205,5 +207,118 @@ describe('canary handler', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+  describe('latency is measured from the self-test run itself, not the next canary tick', () => {
+    const TICK_INTERVAL_MS = 2 * 60 * 1000;
+
+    async function runNextTick(seed: readonly FakeItem[], tickAtMs: number) {
+      vi.useFakeTimers();
+      vi.setSystemTime(tickAtMs);
+      const { send, items } = createFakeDdb(seed);
+      const { createDynamoClient } = await import('../eligibility/dynamoClient.js');
+      vi.mocked(createDynamoClient).mockReturnValue({ send } as unknown as DynamoDBDocumentClient);
+      const logSpy = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+      try {
+        const { handler } = await import('./handler.js');
+        await handler();
+        const canaryRun = [...items.values()].find((item) => item.entityType === 'CANARY_RUN');
+        const emittedLatency = logSpy.mock.calls
+          .map((call) => {
+            try {
+              return JSON.parse(call[0] as string) as Record<string, unknown>;
+            } catch {
+              return {};
+            }
+          })
+          .find((entry) => entry.CanaryLatencyMs !== undefined)?.CanaryLatencyMs;
+        return { canaryRun, emittedLatency };
+      } finally {
+        logSpy.mockRestore();
+        vi.useRealTimers();
+      }
+    }
+
+    function seedFor(armedAtMs: number, run: Record<string, unknown> | undefined): FakeItem[] {
+      return [
+        {
+          pk: 'DEPT#NICHOLS#CANARY',
+          sk: 'STATE',
+          pendingTestId: 'canary-1',
+          pendingRunAt: Math.floor(armedAtMs / 1000),
+          pendingRunAtMs: armedAtMs,
+        },
+        ...(run
+          ? [
+              {
+                pk: 'DEPT#NICHOLS#MEMBER#canary-device',
+                sk: 'SELFTEST#canary-1',
+                entityType: 'SELF_TEST_RUN',
+                channelResults: { PUSH: { ok: true, ms: 100 } },
+                ...run,
+              },
+            ]
+          : []),
+      ];
+    }
+
+    it('records PASS with latency = completedAtMs - armed time even though the tick is 2 minutes later', async () => {
+      const armedAtMs = Date.UTC(2026, 8, 26, 12, 0, 0, 250);
+      const { canaryRun, emittedLatency } = await runNextTick(
+        seedFor(armedAtMs, { overallResult: 'PASS', completedAtMs: armedAtMs + 1_800 }),
+        armedAtMs + TICK_INTERVAL_MS,
+      );
+      expect(canaryRun).toMatchObject({ result: 'PASS', testId: 'canary-1', latencyMs: 1_800 });
+      expect(emittedLatency).toBe(1_800);
+    });
+
+    it('records FAIL when the run itself completed outside the 5s budget', async () => {
+      const armedAtMs = Date.UTC(2026, 8, 26, 12, 0, 0, 0);
+      const { canaryRun } = await runNextTick(
+        seedFor(armedAtMs, { overallResult: 'PASS', completedAtMs: armedAtMs + 7_000 }),
+        armedAtMs + TICK_INTERVAL_MS,
+      );
+      expect(canaryRun).toMatchObject({ result: 'FAIL', latencyMs: 7_000 });
+    });
+
+    it('records FAIL (latency = elapsed so far) when the run never completed', async () => {
+      const armedAtMs = Date.UTC(2026, 8, 26, 12, 0, 0, 0);
+      const { canaryRun } = await runNextTick(
+        seedFor(armedAtMs, { overallResult: 'RUNNING' }),
+        armedAtMs + TICK_INTERVAL_MS,
+      );
+      expect(canaryRun).toMatchObject({ result: 'FAIL', latencyMs: TICK_INTERVAL_MS });
+    });
+
+    it('falls back to second-precision pendingRunAt for a pointer written before pendingRunAtMs', async () => {
+      const armedAtMs = Date.UTC(2026, 8, 26, 12, 0, 0, 0);
+      const [pointer, run] = seedFor(armedAtMs, {
+        overallResult: 'PASS',
+        completedAtMs: armedAtMs + 900,
+      });
+      const legacyPointer: FakeItem = { ...pointer! };
+      delete legacyPointer.pendingRunAtMs;
+      const { canaryRun } = await runNextTick([legacyPointer, run!], armedAtMs + TICK_INTERVAL_MS);
+      expect(canaryRun).toMatchObject({ result: 'PASS', latencyMs: 900 });
+    });
+
+    it('arms the next pointer with a millisecond start time', async () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(Date.UTC(2026, 8, 26, 12, 0, 0, 431));
+      try {
+        const { send, items } = createFakeDdb();
+        const { createDynamoClient } = await import('../eligibility/dynamoClient.js');
+        vi.mocked(createDynamoClient).mockReturnValue({
+          send,
+        } as unknown as DynamoDBDocumentClient);
+        const { handler } = await import('./handler.js');
+        await handler();
+        expect(items.get('DEPT#NICHOLS#CANARY#STATE')).toMatchObject({
+          pendingRunAtMs: Date.UTC(2026, 8, 26, 12, 0, 0, 431),
+          pendingRunAt: Math.floor(Date.UTC(2026, 8, 26, 12, 0, 0, 431) / 1000),
+        });
+      } finally {
+        vi.useRealTimers();
+      }
+    });
   });
 });

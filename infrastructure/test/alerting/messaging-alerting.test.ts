@@ -26,6 +26,16 @@ async function resolve<T>(output: pulumi.Output<T>): Promise<T> {
 }
 
 describe("MessagingAlerting", () => {
+  it("keeps every per-channel FIFO DLQ for 14 days (evidence of a missed page outlives a weekend)", async () => {
+    mockResources();
+    const { MessagingAlerting } = await import("../../components/alerting/messaging-alerting");
+    const messaging = new MessagingAlerting("messaging", { env: "dev" });
+    for (const channel of ["push", "sms", "voice"] as const) {
+      const retention = await resolve(messaging.channelQueues[channel].dlq.messageRetentionSeconds);
+      expect(retention, channel).toBe(1_209_600);
+    }
+  });
+
   it("names the FIFO topic with content-based dedup off (publisher sets MessageDeduplicationId)", async () => {
     mockResources();
     const { MessagingAlerting } = await import("../../components/alerting/messaging-alerting");

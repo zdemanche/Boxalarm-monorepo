@@ -5,6 +5,7 @@ import { toVerifiedDeptId } from '@boxalarm/dept-scope';
 import { emitOutcomeMetric } from '@boxalarm/metrics';
 import { queryCertificationsDueInMonth } from '../certificationRepository.js';
 import { createDynamoClient } from '../dynamoClient.js';
+import { expiryFlipMonths, flipExpiredCertifications } from '../certifications/expiryScan.js';
 import {
   monthPartitionsForScan,
   readCertExpiryLeadDays,
@@ -55,13 +56,24 @@ export async function runCertificationExpiryScan(
 
   try {
     const leadDays = await readCertExpiryLeadDays(ddb, process.env, deptId, correlationId);
-    const monthPartitions = monthPartitionsForScan(now, leadDays);
+    // Lead-time partitions (current month forward) plus the prior month, so a cert that
+    // expired late last month is still flipped to EXPIRED on this run.
+    const monthPartitions = Array.from(
+      new Set([...expiryFlipMonths(now), ...monthPartitionsForScan(now, leadDays)]),
+    );
     const results = await Promise.all(
       monthPartitions.map((yearMonth) =>
         queryCertificationsDueInMonth(ddb, process.env, { deptId, yearMonth, correlationId }),
       ),
     );
-    const dueRecords = selectWithinLeadTime(results.flat(), now, leadDays);
+    const allRecords = results.flat();
+
+    // #221: the stored status must actually become EXPIRED — certExpiredReactor.ts only
+    // reacts to that stream transition, and it is what clears currentlyEligible for the
+    // alerting eligibility snapshot. Done first: it is the life-safety half of this job.
+    const flip = await flipExpiredCertifications(ddb, process.env, deptId, allRecords, now);
+
+    const dueRecords = selectWithinLeadTime(allRecords, now, leadDays);
 
     emitOutcomeMetric(METRIC_NAMESPACE, 'Scanned');
     await publishWithBoundedConcurrency(dueRecords, (record) =>
@@ -75,6 +87,12 @@ export async function runCertificationExpiryScan(
         now,
       }).then(() => undefined),
     );
+
+    // Fail the invocation (Errors alarm, scheduler retry) rather than let an unflipped
+    // expired cert leave a member alert-eligible silently. Every step above is idempotent.
+    if (flip.failed > 0) {
+      throw new Error(`${flip.failed} expired certification(s) could not be flipped to EXPIRED`);
+    }
   } catch (error) {
     console.error(
       JSON.stringify({

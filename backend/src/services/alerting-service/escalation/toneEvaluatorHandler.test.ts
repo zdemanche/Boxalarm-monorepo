@@ -271,6 +271,7 @@ describe('toneEvaluatorHandler', () => {
     requestMutualAid.mockClear();
     process.env.ESCALATION_HANDLER_ARN = 'arn:aws:lambda:us-east-1:1:function:escalation';
     process.env.ESCALATION_SCHEDULER_ROLE_ARN = 'arn:aws:iam::1:role/scheduler';
+    process.env.ESCALATION_SCHEDULE_GROUP_NAME = 'boxalarm-dev-alerting-escalation';
   });
 
   afterEach(() => {

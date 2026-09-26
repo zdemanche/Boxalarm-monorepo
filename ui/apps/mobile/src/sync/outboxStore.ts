@@ -2,7 +2,9 @@ import { getDb } from './db';
 
 export type OutboxKind = 'CHECKLIST_RUN' | 'DEFECT';
 export type OutboxStage = 'CREATE' | 'UPLOAD_PHOTO' | 'DONE';
-export type OutboxRowStatus = 'QUEUED' | 'SYNCING' | 'FAILED';
+// FAILED is transient (retried with backoff); REJECTED is terminal (the server refused the
+// request itself, e.g. a 4xx validation error) and waits for the user to retry or discard it.
+export type OutboxRowStatus = 'QUEUED' | 'SYNCING' | 'FAILED' | 'REJECTED';
 
 export interface OutboxRow {
   readonly id: string;

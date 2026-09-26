@@ -54,9 +54,9 @@ beforeEach(() => {
 describe('responses handler', () => {
   it('wires the RecordResponse action against the Dispatch resource', () => {
     expect(capturedOptions[capturedOptions.length - 1]).toMatchObject({
-      actionType: 'AlertingService',
+      actionType: 'Boxalarm::Action',
       actionId: 'RecordResponse',
-      resourceType: 'Dispatch',
+      resourceType: 'Boxalarm::Dispatch',
     });
   });
 

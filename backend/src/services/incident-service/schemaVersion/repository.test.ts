@@ -91,6 +91,28 @@ describe('createSchemaVersionRepository', () => {
     expect(send).toHaveBeenCalledTimes(2);
   });
 
+  it('resolves the active schema version when the method is destructured off the repository', async () => {
+    const send = vi
+      .fn()
+      .mockResolvedValueOnce({ Item: { activeVersion: '2026.2' } })
+      .mockResolvedValueOnce({
+        Item: {
+          version: '2026.2',
+          status: 'ACTIVE',
+          coreSchemaS3Key: 'k1',
+          secondarySchemaS3Key: 'k2',
+          publishedAt: 1,
+        },
+      });
+    const { getActiveSchemaVersion } = createSchemaVersionRepository(
+      fakeClient(send),
+      TABLE_NAME,
+      createConfigCache({ ttlMs: 1000 }),
+    );
+
+    await expect(getActiveSchemaVersion()).resolves.toMatchObject({ version: '2026.2' });
+  });
+
   it('caches the active pointer lookup within the TTL (AC3 no stale-beyond-TTL, positive side)', async () => {
     const send = vi.fn().mockResolvedValue({ Item: { activeVersion: '2026.2' } });
     const repository = createSchemaVersionRepository(
@@ -101,6 +123,17 @@ describe('createSchemaVersionRepository', () => {
 
     await repository.getActiveVersionNumber();
     await repository.getActiveVersionNumber();
+
+    expect(send).toHaveBeenCalledTimes(1);
+  });
+
+  it('shares the default pointer cache across repositories, since handlers build one per request', async () => {
+    vi.resetModules();
+    const { createSchemaVersionRepository: freshFactory } = await import('./repository.js');
+    const send = vi.fn().mockResolvedValue({ Item: { activeVersion: '2026.2' } });
+
+    await freshFactory(fakeClient(send), TABLE_NAME).getActiveVersionNumber();
+    await freshFactory(fakeClient(send), TABLE_NAME).getActiveVersionNumber();
 
     expect(send).toHaveBeenCalledTimes(1);
   });

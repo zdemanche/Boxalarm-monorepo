@@ -2,9 +2,11 @@ import { FormEvent, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link, useParams } from 'react-router-dom';
 import { useAuth } from '../../auth/AuthContext';
+import { canManageTraining } from '../../auth/roles';
 import { ApiError } from '../../lib/apiClient';
 import { ApiForbiddenGate } from '../../components/ApiForbiddenGate';
 import { Badge } from '../../components/ui/Chip';
+import { ConfirmDialog } from '../../components/ui/Dialog';
 import { PageHeader } from '../../components/ui/PageHeader';
 import { revokeMemberSessions } from '../platform/api';
 import { CertificationsPanel } from '../training/CertificationsPanel';
@@ -232,6 +234,7 @@ export function MemberDetailPage() {
   const [revokeError, setRevokeError] = useState<string | null>(null);
   const [revokeForbidden, setRevokeForbidden] = useState<unknown>(null);
   const [revoked, setRevoked] = useState(false);
+  const [confirmRevokeOpen, setConfirmRevokeOpen] = useState(false);
 
   const revokeMutation = useMutation({
     mutationFn: () => revokeMemberSessions(auth, id),
@@ -251,16 +254,13 @@ export function MemberDetailPage() {
     },
   });
 
+  // ConfirmDialog names the member (PR #321 review m3). Role check alone gates it - no step-up.
   function handleRevoke() {
-    if (
-      window.confirm('Revoke all sessions for this member? They will be signed out everywhere.')
-    ) {
-      setRevoked(false);
-      revokeMutation.mutate();
-    }
+    setRevoked(false);
+    revokeMutation.mutate();
   }
 
-  const isTraining = auth.roles.includes('TRAINING') || auth.roles.includes('ADMIN');
+  const isTraining = canManageTraining(auth.roles);
   // Matches the inspections write-access precedent (ADMIN || CHIEF) — PPE issuance is a new
   // control added in this PR, unlike the pre-existing ADMIN-only member-status gate below.
   const canIssuePpe = isAdmin || auth.roles.includes('CHIEF');
@@ -389,7 +389,7 @@ export function MemberDetailPage() {
             <div style={{ marginTop: 'var(--boxalarm-spacing-lg)' }}>
               <button
                 type="button"
-                onClick={handleRevoke}
+                onClick={() => setConfirmRevokeOpen(true)}
                 disabled={revokeMutation.isPending}
                 style={{ minHeight: 44 }}
               >
@@ -406,6 +406,15 @@ export function MemberDetailPage() {
                 </p>
               ) : null}
               {revoked ? <p role="status">Sessions revoked.</p> : null}
+              <ConfirmDialog
+                open={confirmRevokeOpen}
+                onOpenChange={setConfirmRevokeOpen}
+                title={`Revoke all sessions for ${member.firstName} ${member.lastName}?`}
+                consequence={`${member.firstName} ${member.lastName} will be signed out on every device and must sign in again.`}
+                confirmLabel="Revoke sessions"
+                onConfirm={handleRevoke}
+                danger
+              />
             </div>
           ) : null}
           <CertificationsPanel memberId={member.memberId} />

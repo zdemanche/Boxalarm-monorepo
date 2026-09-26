@@ -144,3 +144,63 @@ test('retry clears FAILED status and makes the row immediately due again', async
   expect(row?.status).toBe('QUEUED');
   expect(row!.nextAttemptAt).toBeLessThanOrEqual(Date.now());
 });
+
+test('recoverOrphanedSyncing returns rows stranded in SYNCING (app killed mid-upload) to the queue', async () => {
+  await outbox.enqueue({
+    id: 'ORPHAN-1',
+    kind: 'DEFECT',
+    label: 'killed mid-upload',
+    path: 'apparatus/ENGINE-2/defects',
+    body: {},
+  });
+  await outbox.markSyncing('ORPHAN-1');
+  await outbox.enqueue({
+    id: 'NOT-ORPHAN',
+    kind: 'DEFECT',
+    label: 'backing off',
+    path: 'apparatus/ENGINE-2/defects',
+    body: {},
+  });
+  await outbox.markFailed('NOT-ORPHAN', 'boom');
+  const failedBefore = await store.find('NOT-ORPHAN');
+
+  await outbox.recoverOrphanedSyncing();
+
+  const recovered = await store.find('ORPHAN-1');
+  expect(recovered?.status).toBe('QUEUED');
+  expect((await outbox.listDrainable(Date.now())).map((row) => row.id)).toContain('ORPHAN-1');
+  expect(await store.find('NOT-ORPHAN')).toEqual(failedBefore);
+});
+
+test('markRejected is terminal: the row is kept but excluded from drains until manually retried', async () => {
+  await outbox.enqueue({
+    id: 'REJECT-1',
+    kind: 'DEFECT',
+    label: 'bad payload',
+    path: 'apparatus/ENGINE-2/defects',
+    body: {},
+  });
+  await outbox.markRejected('REJECT-1', 'Validation failed');
+
+  const row = await store.find('REJECT-1');
+  expect(row?.status).toBe('REJECTED');
+  expect(row?.lastError).toBe('Validation failed');
+  expect((await outbox.listDrainable(Date.now() + 60 * 60_000)).map((r) => r.id)).not.toContain(
+    'REJECT-1',
+  );
+
+  await outbox.retry('REJECT-1');
+  expect((await outbox.listDrainable(Date.now())).map((r) => r.id)).toContain('REJECT-1');
+});
+
+test('discard removes the row', async () => {
+  await outbox.enqueue({
+    id: 'DISCARD-1',
+    kind: 'DEFECT',
+    label: 'unwanted',
+    path: 'apparatus/ENGINE-2/defects',
+    body: {},
+  });
+  await outbox.discard('DISCARD-1');
+  expect(await store.find('DISCARD-1')).toBeUndefined();
+});

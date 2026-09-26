@@ -3,7 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useAuth } from '../../auth/AuthContext';
 import { ApiError } from '../../lib/apiClient';
 import { ApiForbiddenGate } from '../../components/ApiForbiddenGate';
-import { Button, Card, Skeleton, TextInput } from '../../components/ui';
+import { Button, Card, ConfirmDialog, Skeleton, TextInput } from '../../components/ui';
 import { getRetentionConfig, putRetentionConfig, runDisposal } from './api';
 import { LIFE_SAFETY_RECORD_CLASSES, type DisposalResult } from './types';
 
@@ -24,6 +24,7 @@ export function RetentionSection() {
   const [disposalResult, setDisposalResult] = useState<DisposalResult | null>(null);
   const [disposalError, setDisposalError] = useState<string | null>(null);
   const [disposalForbidden, setDisposalForbidden] = useState<unknown>(null);
+  const [confirmDisposalOpen, setConfirmDisposalOpen] = useState(false);
 
   useEffect(() => {
     if (retentionQuery.data) {
@@ -84,15 +85,7 @@ export function RetentionSection() {
     saveMutation.mutate(parsed);
   }
 
-  function handleDisposal() {
-    if (
-      window.confirm(
-        'Run records disposal now? Records past their retention period will be permanently destroyed and an audit event written.',
-      )
-    ) {
-      disposalMutation.mutate();
-    }
-  }
+  const retentionYears = retentionQuery.data?.retentionYears;
 
   return (
     <Card title="Records retention">
@@ -139,13 +132,22 @@ export function RetentionSection() {
       <Button
         type="button"
         variant="danger"
-        onClick={handleDisposal}
+        onClick={() => setConfirmDisposalOpen(true)}
         loading={disposalMutation.isPending}
         disabled={retentionQuery.isLoading || Boolean(retentionQuery.error)}
         style={{ marginTop: 'var(--bx-space-md)' }}
       >
         Run disposal
       </Button>
+      <ConfirmDialog
+        open={confirmDisposalOpen}
+        onOpenChange={setConfirmDisposalOpen}
+        title={`Permanently dispose of records older than ${retentionYears ?? '?'} years?`}
+        consequence="Records past the retention period are permanently destroyed (deleted or crypto-shredded) and an audit event is written. Life-safety record classes listed above are not touched."
+        confirmLabel="Run disposal"
+        onConfirm={() => disposalMutation.mutate()}
+        danger
+      />
       {retentionQuery.error ? (
         <p role="alert">
           The retention period could not be confirmed, so disposal is disabled until it loads

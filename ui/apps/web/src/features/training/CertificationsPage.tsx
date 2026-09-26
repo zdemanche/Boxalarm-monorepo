@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { useAuth } from '../../auth/AuthContext';
 import { ApiForbiddenGate } from '../../components/ApiForbiddenGate';
-import { DataTable, PageHeader, Select, type DataTableColumn } from '../../components/ui';
+import { DataTable, PageHeader, Select, Tabs, type DataTableColumn } from '../../components/ui';
 import { listMembers } from '../personnel/api';
 import { listExpiringCertifications } from './api';
 import { CertificationsPanel } from './CertificationsPanel';
@@ -66,53 +66,46 @@ export function CertificationsPage() {
     <main id="main-content">
       <PageHeader title="Certifications" />
 
-      <div
-        role="tablist"
-        aria-label="Certifications views"
-        style={{ display: 'flex', gap: 'var(--bx-space-sm)' }}
-      >
-        <button
-          type="button"
-          role="tab"
-          aria-selected={tab === 'certifications'}
-          onClick={() => setTab('certifications')}
-          style={{ minHeight: 44, padding: '0 var(--bx-space-md)' }}
-        >
-          Certifications
-        </button>
-        <button
-          type="button"
-          role="tab"
-          aria-selected={tab === 'expiring'}
-          onClick={() => setTab('expiring')}
-          style={{ minHeight: 44, padding: '0 var(--bx-space-md)' }}
-        >
-          Expiring
-        </button>
-      </div>
-
-      {tab === 'certifications' ? (
-        <div style={{ marginTop: 'var(--bx-space-lg)' }}>
-          <Select
-            label="Member"
-            value={selectedMemberId}
-            onChange={(e) => setSelectedMemberId(e.target.value)}
-            style={{ maxWidth: 320 }}
-          >
-            <option value="">Select a member…</option>
-            {(membersQuery.data ?? []).map((member) => (
-              <option key={member.memberId} value={member.memberId}>
-                {member.lastName}, {member.firstName}
-              </option>
-            ))}
-          </Select>
-          {selectedMemberId ? <CertificationsPanel memberId={selectedMemberId} /> : null}
-        </div>
-      ) : (
-        <div style={{ marginTop: 'var(--bx-space-lg)' }}>
-          <ExpiringTab />
-        </div>
-      )}
+      {/* Shared Radix Tabs (PR #321 review m7): tab/tabpanel wiring, aria-controls, roving
+          tabindex and arrow-key navigation, instead of a hand-rolled role="tab" row. */}
+      <Tabs
+        label="Certifications views"
+        value={tab}
+        onValueChange={(next) => setTab(next as Tab)}
+        items={[
+          {
+            value: 'certifications',
+            label: 'Certifications',
+            content: (
+              <div style={{ marginTop: 'var(--bx-space-lg)' }}>
+                <Select
+                  label="Member"
+                  value={selectedMemberId}
+                  onChange={(e) => setSelectedMemberId(e.target.value)}
+                  style={{ maxWidth: 320 }}
+                >
+                  <option value="">Select a member…</option>
+                  {(membersQuery.data ?? []).map((member) => (
+                    <option key={member.memberId} value={member.memberId}>
+                      {member.lastName}, {member.firstName}
+                    </option>
+                  ))}
+                </Select>
+                {selectedMemberId ? <CertificationsPanel memberId={selectedMemberId} /> : null}
+              </div>
+            ),
+          },
+          {
+            value: 'expiring',
+            label: 'Expiring',
+            content: (
+              <div style={{ marginTop: 'var(--bx-space-lg)' }}>
+                <ExpiringTab />
+              </div>
+            ),
+          },
+        ]}
+      />
     </main>
   );
 }

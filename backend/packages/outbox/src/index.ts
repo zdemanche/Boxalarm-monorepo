@@ -7,6 +7,7 @@ export {
   readOutboxDrainConfig,
   type OutboxDrainClients,
   type OutboxDrainConfig,
+  type OutboxDrainOptions,
 } from './drainHandler.js';
 
 export interface EventEnvelope<TPayload> {

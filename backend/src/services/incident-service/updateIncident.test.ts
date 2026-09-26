@@ -150,6 +150,7 @@ describe('updateIncident handler', () => {
       { incident_type: 'STRUCTURE_FIRE', action_taken: 'EXTINGUISH' },
       'VALIDATED',
       expect.any(Number),
+      'req-1',
     );
   });
 
@@ -170,6 +171,7 @@ describe('updateIncident handler', () => {
       expect.any(Object),
       'DRAFT',
       expect.any(Number),
+      'req-1',
     );
   });
 

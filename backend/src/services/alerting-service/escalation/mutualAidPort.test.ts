@@ -81,6 +81,7 @@ function createFakeDdb(
 }
 
 const DEPT_ID = toVerifiedDeptId({ deptId: 'NICHOLS' });
+const DISPATCH_TEXT = { incidentType: 'STRUCTURE_FIRE', address: '1 Main St', isTest: false };
 const ELIGIBILITY_PK = 'DEPT#NICHOLS#ELIGIBILITY';
 
 describe('requestMutualAid', () => {
@@ -120,6 +121,7 @@ describe('requestMutualAid', () => {
       topicArn: 'arn:aws:sns:us-east-1:1:alerting-topic.fifo',
       deptId: DEPT_ID,
       dispatchId: 'dispatch-1',
+      dispatch: DISPATCH_TEXT,
       reason: 'TONE_3_PREDICATE_UNMET',
     });
 
@@ -173,6 +175,7 @@ describe('requestMutualAid', () => {
       topicArn: 'arn:aws:sns:us-east-1:1:alerting-topic.fifo',
       deptId: DEPT_ID,
       dispatchId: 'dispatch-1',
+      dispatch: DISPATCH_TEXT,
       reason: 'TONE_3_PREDICATE_UNMET',
     });
 
@@ -221,6 +224,7 @@ describe('requestMutualAid', () => {
       topicArn: 'arn:aws:sns:us-east-1:1:alerting-topic.fifo',
       deptId: DEPT_ID,
       dispatchId: 'dispatch-1',
+      dispatch: DISPATCH_TEXT,
       reason: 'TONE_3_PREDICATE_UNMET',
     });
 
@@ -250,6 +254,7 @@ describe('requestMutualAid', () => {
       topicArn: 'arn:aws:sns:us-east-1:1:alerting-topic.fifo',
       deptId: DEPT_ID,
       dispatchId: 'dispatch-1',
+      dispatch: DISPATCH_TEXT,
       reason: 'TONE_3_PREDICATE_UNMET',
     });
 

@@ -1,19 +1,14 @@
-import {
-  ConditionalCheckFailedException,
-  DynamoDBClient,
-  TransactionCanceledException,
-} from '@aws-sdk/client-dynamodb';
+import { DynamoDBClient, TransactionCanceledException } from '@aws-sdk/client-dynamodb';
 import {
   DynamoDBDocumentClient,
   GetCommand,
   QueryCommand,
   TransactWriteCommand,
-  UpdateCommand,
 } from '@aws-sdk/lib-dynamodb';
 import { captureAWSv3Client } from 'aws-xray-sdk-core';
 import { assertNoDelimiter, buildDeptScopedPk } from '@boxalarm/dept-scope';
 import type { VerifiedDeptId } from '@boxalarm/dept-scope';
-import { buildOutboxRecord } from '@boxalarm/outbox';
+import { buildOutboxRecord, type OutboxRecord } from '@boxalarm/outbox';
 import {
   buildNerisIncidentId,
   isIncidentStatus,
@@ -40,6 +35,7 @@ export interface IncidentRepository {
     incidentId: string,
     narrative: string,
     nowEpochSeconds: number,
+    traceId: string,
   ): Promise<Incident>;
   updateCorePayload(
     deptId: VerifiedDeptId,
@@ -47,6 +43,7 @@ export interface IncidentRepository {
     corePayload: Readonly<Record<string, unknown>>,
     status: IncidentStatus,
     nowEpochSeconds: number,
+    traceId: string,
   ): Promise<Incident>;
   searchIncidents(
     deptId: VerifiedDeptId,
@@ -136,10 +133,69 @@ function resolveStatus(input: CreateIncidentInput): IncidentStatus {
   return input.status;
 }
 
+/** True when a TransactWrite was cancelled by the condition on its item at `index`. */
+export function isConditionFailureAt(error: unknown, index: number): boolean {
+  return (
+    error instanceof TransactionCanceledException &&
+    error.CancellationReasons?.[index]?.Code === 'ConditionalCheckFailed'
+  );
+}
+
 export function createIncidentRepository(
   client: DynamoDBDocumentClient,
   tableName: string,
 ): IncidentRepository {
+  const metadataKey = (deptId: VerifiedDeptId, incidentId: string) => ({
+    pk: buildDeptScopedPk(deptId, 'INCIDENT', incidentId),
+    sk: 'METADATA',
+  });
+
+  // Every incident mutation that raises an event commits its entity Update and its
+  // OUTBOX_ENTRY Put atomically (the house outbox pattern createIncident follows).
+  // TransactWriteItems can't return ALL_NEW, so the committed item is read back with a
+  // strongly consistent Get.
+  async function updateWithOutbox(
+    deptId: VerifiedDeptId,
+    incidentId: string,
+    update: {
+      readonly UpdateExpression: string;
+      readonly ExpressionAttributeValues: Record<string, unknown>;
+      readonly ExpressionAttributeNames?: Record<string, string>;
+    },
+    outboxRecord: OutboxRecord<unknown>,
+  ): Promise<Incident> {
+    const Key = metadataKey(deptId, incidentId);
+    try {
+      await client.send(
+        new TransactWriteCommand({
+          TransactItems: [
+            {
+              Update: {
+                TableName: tableName,
+                Key,
+                ConditionExpression: 'attribute_exists(pk)',
+                ...update,
+              },
+            },
+            { Put: { TableName: tableName, Item: outboxRecord } },
+          ],
+        }),
+      );
+    } catch (error) {
+      if (isConditionFailureAt(error, 0)) {
+        throw new IncidentNotFoundError(incidentId);
+      }
+      throw error;
+    }
+    const result = await client.send(
+      new GetCommand({ TableName: tableName, Key, ConsistentRead: true }),
+    );
+    if (!result.Item) {
+      throw new IncidentNotFoundError(incidentId);
+    }
+    return toIncident(result.Item as Record<string, unknown>);
+  }
+
   return {
     async createIncident(deptId, input, nowEpochSeconds, traceId) {
       assertNoDelimiter(input.dispatchNumber, 'dispatchNumber');
@@ -237,10 +293,7 @@ export function createIncidentRepository(
           }),
         );
       } catch (error) {
-        if (
-          error instanceof TransactionCanceledException &&
-          error.CancellationReasons?.[0]?.Code === 'ConditionalCheckFailed'
-        ) {
+        if (isConditionFailureAt(error, 0)) {
           throw new DuplicateIncidentError(incidentId);
         }
         throw error;
@@ -250,43 +303,36 @@ export function createIncidentRepository(
 
     async getIncident(deptId, incidentId) {
       const result = await client.send(
-        new GetCommand({
-          TableName: tableName,
-          Key: {
-            pk: buildDeptScopedPk(deptId, 'INCIDENT', incidentId),
-            sk: 'METADATA',
-          },
-        }),
+        new GetCommand({ TableName: tableName, Key: metadataKey(deptId, incidentId) }),
       );
       return result.Item ? toIncident(result.Item as Record<string, unknown>) : undefined;
     },
 
-    async updateNarrative(deptId, incidentId, narrative, nowEpochSeconds) {
+    async updateNarrative(deptId, incidentId, narrative, nowEpochSeconds, traceId) {
       if (narrative.length > MAX_NARRATIVE_LENGTH) {
         throw new NarrativeTooLongError(narrative.length);
       }
-      try {
-        const result = await client.send(
-          new UpdateCommand({
-            TableName: tableName,
-            Key: { pk: buildDeptScopedPk(deptId, 'INCIDENT', incidentId), sk: 'METADATA' },
-            ConditionExpression: 'attribute_exists(pk)',
-            UpdateExpression:
-              'SET narrative = :narrative, corePayload.narrative = :narrative, updatedAt = :updatedAt',
-            ExpressionAttributeValues: { ':narrative': narrative, ':updatedAt': nowEpochSeconds },
-            ReturnValues: 'ALL_NEW',
-          }),
-        );
-        return toIncident(result.Attributes as Record<string, unknown>);
-      } catch (error) {
-        if (error instanceof ConditionalCheckFailedException) {
-          throw new IncidentNotFoundError(incidentId);
-        }
-        throw error;
-      }
+      // Lean payload: identifiers only, not the (up to 25k-char) narrative text.
+      const outboxRecord = buildOutboxRecord(
+        deptId,
+        'incident-service',
+        'incident.narrative.updated',
+        traceId,
+        { incidentId, deptId, updatedAt: nowEpochSeconds },
+      );
+      return updateWithOutbox(
+        deptId,
+        incidentId,
+        {
+          UpdateExpression:
+            'SET narrative = :narrative, corePayload.narrative = :narrative, updatedAt = :updatedAt',
+          ExpressionAttributeValues: { ':narrative': narrative, ':updatedAt': nowEpochSeconds },
+        },
+        outboxRecord,
+      );
     },
 
-    async updateCorePayload(deptId, incidentId, corePayload, status, nowEpochSeconds) {
+    async updateCorePayload(deptId, incidentId, corePayload, status, nowEpochSeconds, traceId) {
       const setClauses = [
         'corePayload = :corePayload',
         '#status = :status',
@@ -315,25 +361,29 @@ export function createIncidentRepository(
         values[':address'] = address;
       }
 
-      try {
-        const result = await client.send(
-          new UpdateCommand({
-            TableName: tableName,
-            Key: { pk: buildDeptScopedPk(deptId, 'INCIDENT', incidentId), sk: 'METADATA' },
-            ConditionExpression: 'attribute_exists(pk)',
-            UpdateExpression: `SET ${setClauses.join(', ')}`,
-            ExpressionAttributeNames: { '#status': 'status' },
-            ExpressionAttributeValues: values,
-            ReturnValues: 'ALL_NEW',
-          }),
-        );
-        return toIncident(result.Attributes as Record<string, unknown>);
-      } catch (error) {
-        if (error instanceof ConditionalCheckFailedException) {
-          throw new IncidentNotFoundError(incidentId);
-        }
-        throw error;
-      }
+      const outboxRecord = buildOutboxRecord(
+        deptId,
+        'incident-service',
+        'incident.updated',
+        traceId,
+        {
+          incidentId,
+          deptId,
+          status,
+          ...(typeof incidentType === 'string' ? { incidentType } : {}),
+          updatedAt: nowEpochSeconds,
+        },
+      );
+      return updateWithOutbox(
+        deptId,
+        incidentId,
+        {
+          UpdateExpression: `SET ${setClauses.join(', ')}`,
+          ExpressionAttributeNames: { '#status': 'status' },
+          ExpressionAttributeValues: values,
+        },
+        outboxRecord,
+      );
     },
 
     async searchIncidents(deptId, input) {

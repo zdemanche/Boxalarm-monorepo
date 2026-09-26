@@ -7,10 +7,15 @@ import {
   type TransactWriteCommandInput,
 } from '@aws-sdk/lib-dynamodb';
 import { buildDeptScopedPk, toVerifiedDeptId, type VerifiedDeptId } from '@boxalarm/dept-scope';
-import { buildOutboxRecord } from '@boxalarm/outbox';
+import { buildBridgeOutboxRecord } from '../platformBusBridge.js';
 import { emitOutcomeMetric } from '@boxalarm/metrics';
 import { createDynamoClient, readAlertingConfig } from '../eligibility/dynamoClient.js';
 import { buildAlertingEnvelope } from './alertingEnvelope.js';
+import {
+  buildChannelPagePayload,
+  readDispatchAlertText,
+  type DispatchAlertText,
+} from '../channels/channelEnvelope.js';
 import { queryEligibleMembers, type EligibilitySnapshotItem } from '../eligibility/selector.js';
 import { resolvePushTarget, resolveSmsTarget } from '../eligibility/resolvePushTarget.js';
 import { logError, logInfo } from '../dispatches/logger.js';
@@ -93,12 +98,8 @@ function isToneEvaluatorPayload(value: unknown): value is ToneEvaluatorPayload {
   );
 }
 
-interface DispatchMetadata {
+interface DispatchMetadata extends DispatchAlertText {
   readonly toneLadderStatus: string;
-  readonly incidentType: string | undefined;
-  readonly address: string | undefined;
-  readonly crossStreets: string | undefined;
-  readonly narrative: string | undefined;
 }
 
 async function publishToneChannel(
@@ -160,17 +161,19 @@ async function publishToneChannel(
     new PublishCommand({
       TopicArn: topicArn,
       Message: JSON.stringify(
-        buildAlertingEnvelope('alerting.dispatch.normalized', dispatchId, {
+        buildAlertingEnvelope(
+          'alerting.dispatch.normalized',
           dispatchId,
-          memberId,
-          channel,
-          channelTier: CHANNEL_TIER,
-          toneSequence,
-          incidentType: dispatch.incidentType,
-          address: dispatch.address,
-          crossStreets: dispatch.crossStreets,
-          narrative: dispatch.narrative,
-        }),
+          buildChannelPagePayload({
+            deptId,
+            dispatchId,
+            memberId,
+            channel,
+            channelTier: CHANNEL_TIER,
+            toneSequence,
+            dispatch,
+          }),
+        ),
       ),
       MessageGroupId: dispatchId,
       MessageDeduplicationId: deriveMessageDeduplicationId({
@@ -381,20 +384,14 @@ async function commitToneEvaluation(
     {
       Put: {
         TableName: tableName,
-        Item: buildOutboxRecord(
-          deptId,
-          'alerting-service',
-          'alerting.tone.escalated',
-          correlationId,
-          {
-            dispatchId,
-            toneSequence,
-            firedAt: evaluatedAt,
-            outcome,
-            predicateSnapshot,
-            eligibleMemberCount,
-          },
-        ),
+        Item: buildBridgeOutboxRecord(deptId, 'alerting.tone.escalated', correlationId, {
+          dispatchId,
+          toneSequence,
+          firedAt: evaluatedAt,
+          outcome,
+          predicateSnapshot,
+          eligibleMemberCount,
+        }),
       },
     },
   ];
@@ -469,14 +466,9 @@ export const handler = async (payload: unknown): Promise<{ outcome: ToneOutcome 
     return { outcome: 'SKIPPED_NOT_FOUND' };
   }
   const dispatch: DispatchMetadata = {
+    ...readDispatchAlertText(metadataItem),
     toneLadderStatus:
       typeof metadataItem.toneLadderStatus === 'string' ? metadataItem.toneLadderStatus : 'ACTIVE',
-    incidentType:
-      typeof metadataItem.incidentType === 'string' ? metadataItem.incidentType : undefined,
-    address: typeof metadataItem.address === 'string' ? metadataItem.address : undefined,
-    crossStreets:
-      typeof metadataItem.crossStreets === 'string' ? metadataItem.crossStreets : undefined,
-    narrative: typeof metadataItem.narrative === 'string' ? metadataItem.narrative : undefined,
   };
 
   if (dispatch.toneLadderStatus === 'HALTED_MANUAL') {
@@ -578,6 +570,7 @@ export const handler = async (payload: unknown): Promise<{ outcome: ToneOutcome 
         topicArn,
         deptId,
         dispatchId,
+        dispatch,
         reason: 'TONE_3_PREDICATE_UNMET',
       });
     } catch (error) {

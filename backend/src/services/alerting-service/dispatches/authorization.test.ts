@@ -57,7 +57,7 @@ describe('authorizeManualDispatchSubmission (AC3)', () => {
       policyStoreId: 'store-1',
       accessToken: 'token-1',
       action: { actionType: 'Boxalarm::Action', actionId: 'SubmitManualDispatch' },
-      resource: { entityType: 'Boxalarm::AlertingDispatches', entityId: `dispatches#${deptId}` },
+      resource: { entityType: 'Boxalarm::Department', entityId: deptId },
     });
   });
 });

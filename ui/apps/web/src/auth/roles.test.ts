@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'vitest';
-import { rolesFromProfile, type Role } from './roles';
+import { canManageTraining, rolesFromProfile, type Role } from './roles';
 
 describe('rolesFromProfile', () => {
   test('reads cognito:groups and maps known groups to Role', () => {
@@ -33,5 +33,18 @@ describe('rolesFromProfile', () => {
 
   test('does not use legacy roles when cognito:groups is absent (claim is never issued)', () => {
     expect(rolesFromProfile({ roles: ['CHIEF'] })).toEqual(['MEMBER']);
+  });
+});
+
+describe('canManageTraining', () => {
+  test.each<[Role[], boolean]>([
+    [['TRAINING'], true],
+    [['ADMIN'], true],
+    [['MEMBER', 'TRAINING'], true],
+    [['CHIEF'], false],
+    [['OFFICER'], false],
+    [['MEMBER'], false],
+  ])('%j -> %s', (roles, expected) => {
+    expect(canManageTraining(roles)).toBe(expected);
   });
 });

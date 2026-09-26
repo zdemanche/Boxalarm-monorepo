@@ -10,7 +10,7 @@ interface ScreenProps {
 }
 
 /** Common screen chrome — safe area + ground colour from the active palette. Field posture: no
- * side gutter smaller than `spacing.lg` (design.draft.md §1 spacing rhythm). */
+ * side gutter smaller than `spacing.lg` (docs/design.md §1 spacing rhythm). */
 export function Screen({ children, scroll = true }: ScreenProps) {
   const theme = useTheme();
 

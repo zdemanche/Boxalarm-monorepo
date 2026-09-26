@@ -35,7 +35,7 @@ export function Dialog({ open, onOpenChange, title, description, children, foote
 interface ConfirmDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  /** Names the object and the consequence — design.draft.md §4.5. */
+  /** Names the object and the consequence — docs/design.md §4.5. */
   title: string;
   consequence: string;
   confirmLabel: string;

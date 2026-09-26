@@ -310,8 +310,11 @@ export async function expireCertification(
             Update: {
               TableName: tableName,
               Key: { pk, sk },
-              UpdateExpression: 'SET status = :expired',
-              ConditionExpression: 'status = :current',
+              // `status` is a DynamoDB reserved word — a bare reference is a
+              // ValidationException, so it must go through an attribute-name alias.
+              UpdateExpression: 'SET #status = :expired',
+              ConditionExpression: '#status = :current',
+              ExpressionAttributeNames: { '#status': 'status' },
               ExpressionAttributeValues: { ':expired': 'EXPIRED', ':current': 'CURRENT' },
             },
           },
@@ -394,8 +397,10 @@ export async function revokeCertification(
             Update: {
               TableName: tableName,
               Key: { pk, sk },
-              UpdateExpression: 'SET status = :revoked',
-              ConditionExpression: 'status = :expectedStatus',
+              // `status` is a DynamoDB reserved word — alias it (see expireCertification).
+              UpdateExpression: 'SET #status = :revoked',
+              ConditionExpression: '#status = :expectedStatus',
+              ExpressionAttributeNames: { '#status': 'status' },
               ExpressionAttributeValues: {
                 ':revoked': 'REVOKED',
                 ':expectedStatus': record.status,

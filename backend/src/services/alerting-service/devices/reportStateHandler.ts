@@ -92,8 +92,8 @@ async function reportDeviceState(
 }
 
 export const handler = withAuthorization(reportDeviceState, {
-  actionType: 'MEMBER',
+  actionType: 'Boxalarm::Action',
   actionId: 'ReportDeviceState',
-  resourceType: 'MEMBER',
+  resourceType: 'Boxalarm::Member',
   resourceId: (event) => event.requestContext.authorizer?.lambda?.sub ?? '',
 });

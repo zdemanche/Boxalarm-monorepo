@@ -1,6 +1,7 @@
 import { FormEvent, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useAuth } from '../../auth/AuthContext';
+import { canManageTraining } from '../../auth/roles';
 import { ApiForbiddenGate } from '../../components/ApiForbiddenGate';
 import { Button, Card, PageHeader, Skeleton, TextInput } from '../../components/ui';
 import { createTrainingEvent, listTrainingEvents, recordEventHours, signUpForEvent } from './api';
@@ -16,7 +17,17 @@ interface EventFormState {
 const emptyForm: EventFormState = { title: '', category: '', startAt: 0, endAt: 0 };
 
 function toEpochMs(localDateTime: string): number {
-  return new Date(localDateTime).getTime();
+  if (!localDateTime) return 0;
+  const ms = new Date(localDateTime).getTime();
+  return Number.isNaN(ms) ? 0 : ms;
+}
+
+/** Epoch ms -> the `YYYY-MM-DDTHH:mm` local value a datetime-local input expects; 0 -> ''. */
+function toLocalInputValue(ms: number): string {
+  if (!ms) return '';
+  const d = new Date(ms);
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
 function HoursForm({ event }: { event: TrainingEvent }) {
@@ -62,6 +73,7 @@ function HoursForm({ event }: { event: TrainingEvent }) {
       <Button type="submit" loading={mutation.isPending}>
         Record hours
       </Button>
+      {mutation.error ? <p role="alert">Hours not recorded: {mutation.error.message}</p> : null}
     </form>
   );
 }
@@ -69,7 +81,7 @@ function HoursForm({ event }: { event: TrainingEvent }) {
 export function TrainingEventsPage() {
   const auth = useAuth();
   const queryClient = useQueryClient();
-  const isTraining = auth.roles.includes('TRAINING') || auth.roles.includes('ADMIN');
+  const isTraining = canManageTraining(auth.roles);
   const [form, setForm] = useState<EventFormState>(emptyForm);
   const [formError, setFormError] = useState<string | null>(null);
 
@@ -114,6 +126,10 @@ export function TrainingEventsPage() {
   return (
     <main id="main-content">
       <PageHeader title="Training events" />
+
+      {signUpMutation.error ? (
+        <p role="alert">Sign-up failed: {signUpMutation.error.message}</p>
+      ) : null}
 
       {eventsQuery.isLoading ? (
         <Skeleton lines={4} />
@@ -170,15 +186,19 @@ export function TrainingEventsPage() {
               onChange={(e) => setForm((prev) => ({ ...prev, category: e.target.value }))}
               required
             />
+            {/* Controlled (PR #321 review M9): uncontrolled inputs kept their old DOM value after
+                setForm(emptyForm), so `required` passed and the next create posted epoch 0. */}
             <TextInput
               label="Starts"
               type="datetime-local"
+              value={toLocalInputValue(form.startAt)}
               onChange={(e) => setForm((prev) => ({ ...prev, startAt: toEpochMs(e.target.value) }))}
               required
             />
             <TextInput
               label="Ends"
               type="datetime-local"
+              value={toLocalInputValue(form.endAt)}
               onChange={(e) => setForm((prev) => ({ ...prev, endAt: toEpochMs(e.target.value) }))}
               required
             />

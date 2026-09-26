@@ -52,5 +52,5 @@ Props: `variant?: 'primary' | 'secondary' | 'danger'`, `size?: 'field' | 'alert'
 ```
 
 `status: 'ok' | 'warning' | 'caution' | 'danger' | 'info' | 'neutral'`. Glyph + word + colour,
-never colour alone (design.draft.md §2.3) — rendered as a text glyph rather than an icon library,
+never colour alone (docs/design.md §2.3) — rendered as a text glyph rather than an icon library,
 since this repo has no `react-native-svg` link step to verify in CI (no Xcode/Android SDK here).

@@ -126,6 +126,7 @@ describe('putExposures handler', () => {
       'boxalarm-dev-incident',
       'NICHOLS',
       expect.objectContaining({ secondaryType: 'EXPOSURE', affectedMemberIds: ['MBR-0034'] }),
+      'req-1',
     );
   });
 

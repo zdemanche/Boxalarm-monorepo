@@ -322,11 +322,16 @@ describe('expireCertification', () => {
     const items = command.input.TransactItems ?? [];
     const update = items[0]?.Update as {
       Key: Record<string, string>;
+      UpdateExpression: string;
       ConditionExpression: string;
+      ExpressionAttributeNames: Record<string, string>;
       ExpressionAttributeValues: Record<string, unknown>;
     };
     expect(update.Key).toEqual({ pk: 'DEPT#NICHOLS#MEMBER#MBR-0034', sk: 'CERT#CERT-0091' });
-    expect(update.ConditionExpression).toBe('status = :current');
+    // `status` is a DynamoDB reserved word; a bare reference is rejected at runtime.
+    expect(update.UpdateExpression).toBe('SET #status = :expired');
+    expect(update.ConditionExpression).toBe('#status = :current');
+    expect(update.ExpressionAttributeNames).toEqual({ '#status': 'status' });
     expect(update.ExpressionAttributeValues[':expired']).toBe('EXPIRED');
     const auditPut = items[1]?.Put?.Item as Record<string, unknown>;
     expect(auditPut.action).toBe('UPDATE');
@@ -407,6 +412,14 @@ describe('revokeCertification', () => {
     const auditPut = items[1]?.Put?.Item as Record<string, unknown>;
     expect(auditPut.actorId).toBe('OFFICER-1');
     expect(auditPut.changedFields).toEqual({ status: { old: 'CURRENT', new: 'REVOKED' } });
+    const update = items[0]?.Update as {
+      UpdateExpression: string;
+      ConditionExpression: string;
+      ExpressionAttributeNames: Record<string, string>;
+    };
+    expect(update.UpdateExpression).toBe('SET #status = :revoked');
+    expect(update.ConditionExpression).toBe('#status = :expectedStatus');
+    expect(update.ExpressionAttributeNames).toEqual({ '#status': 'status' });
   });
 
   it('is idempotent when the cert is already REVOKED — no transaction write', async () => {

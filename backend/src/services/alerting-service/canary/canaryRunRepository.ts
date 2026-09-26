@@ -11,7 +11,10 @@ const CANARY_RUN_TTL_SECONDS = 60 * 60 * 24 * 90;
 
 export interface CanaryPointer {
   readonly pendingTestId: string;
+  /** Epoch seconds the pending self-test was armed. */
   readonly pendingRunAt: number;
+  /** Epoch ms the pending self-test was armed; absent on pointers written before it existed. */
+  readonly pendingRunAtMs?: number;
 }
 
 export async function getCanaryPointer(
@@ -29,7 +32,11 @@ export async function getCanaryPointer(
   if (!item || typeof item.pendingTestId !== 'string' || typeof item.pendingRunAt !== 'number') {
     return undefined;
   }
-  return { pendingTestId: item.pendingTestId, pendingRunAt: item.pendingRunAt };
+  return {
+    pendingTestId: item.pendingTestId,
+    pendingRunAt: item.pendingRunAt,
+    ...(typeof item.pendingRunAtMs === 'number' ? { pendingRunAtMs: item.pendingRunAtMs } : {}),
+  };
 }
 
 export async function setCanaryPointer(

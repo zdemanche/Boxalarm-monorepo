@@ -1,11 +1,13 @@
-import { NavLink } from 'react-router-dom';
+import { Link, useLocation } from 'react-router-dom';
 import { useAuth } from '../auth/AuthContext';
-import { routesForRoles } from '../routing/routeTable';
+import { activeNavPathFor, routesForRoles } from '../routing/routeTable';
 import {
   CalendarClock,
   ClipboardList,
   Flame,
+  GraduationCap,
   LayoutDashboard,
+  Package,
   RadioTower,
   ScrollText,
   Settings,
@@ -23,7 +25,9 @@ const ICON_BY_PREFIX: Array<[string, LucideIcon]> = [
   ['/incidents', Flame],
   ['/personnel', Users],
   ['/certifications', ShieldAlert],
+  ['/training', GraduationCap],
   ['/apparatus', Truck],
+  ['/inventory', Package],
   ['/schedule', CalendarClock],
   ['/reporting', ClipboardList],
   ['/settings', Settings],
@@ -46,6 +50,10 @@ interface NavListContentProps {
 export function NavListContent({ onNavigate }: NavListContentProps) {
   const { roles, signOut } = useAuth();
   const links = routesForRoles(roles);
+  // Exactly one active entry: the nav entry the current route belongs to. A prefix match
+  // (NavLink's default) lit up both "Apparatus" and "Apparatus compliance" on
+  // /apparatus/compliance.
+  const activeNavPath = activeNavPathFor(useLocation().pathname);
 
   return (
     <>
@@ -58,17 +66,20 @@ export function NavListContent({ onNavigate }: NavListContentProps) {
           const Icon = iconFor(route.navPath);
           return (
             <li key={route.navPath}>
-              <NavLink
+              <Link
                 to={route.navPath}
-                className={({ isActive }) =>
-                  [styles.navLink, isActive ? styles.navLinkActive : ''].filter(Boolean).join(' ')
-                }
-                end={route.navPath === '/'}
+                className={[
+                  styles.navLink,
+                  route.navPath === activeNavPath ? styles.navLinkActive : '',
+                ]
+                  .filter(Boolean)
+                  .join(' ')}
+                aria-current={route.navPath === activeNavPath ? 'page' : undefined}
                 onClick={onNavigate}
               >
                 <Icon size={18} aria-hidden="true" />
                 {route.label}
-              </NavLink>
+              </Link>
             </li>
           );
         })}

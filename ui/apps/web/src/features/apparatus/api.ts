@@ -160,7 +160,7 @@ export async function updateInventoryQuantity(
   itemId: string,
   quantity: number,
 ): Promise<void> {
-  await apiRequest(`${unit(unitId)}/inventory/${encodeURIComponent(itemId)}/quantity`, tokens, {
+  await apiRequest(`${unit(unitId)}/inventory/${encodeURIComponent(itemId)}`, tokens, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ quantity }),

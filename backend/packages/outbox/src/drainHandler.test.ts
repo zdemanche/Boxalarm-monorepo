@@ -59,6 +59,7 @@ describe('createOutboxDrainHandler', () => {
 
   afterEach(() => {
     process.env = { ...originalEnv };
+    vi.restoreAllMocks();
   });
 
   it('throws before any AWS call when PLATFORM_EVENT_BUS_NAME is not set (entrypoint test)', async () => {
@@ -266,5 +267,123 @@ describe('createOutboxDrainHandler', () => {
     const result = await (handler as StreamHandler)(streamEvent(records));
     expect(send).toHaveBeenCalledTimes(2);
     expect(result).toEqual({ batchItemFailures: [{ itemIdentifier: 'seq-10' }] });
+  });
+
+  describe('options', () => {
+    it('reads the table name from options.tableNameEnvVar and marks sent on that table', async () => {
+      delete process.env.PLATFORM_TABLE_NAME;
+      process.env.ALERTING_TABLE_NAME = 'boxalarm-dev-alerting-table';
+      const { createOutboxDrainHandler } = await import('./drainHandler.js');
+      const send = vi.fn().mockResolvedValue({ Entries: [{ EventId: 'e-1' }] });
+      const ddbSend = vi.fn().mockResolvedValue({});
+      const handler = createOutboxDrainHandler(
+        'alerting-service',
+        { eventBridgeClient: fakeEventBridgeClient(send), ddbClient: fakeDdbClient(ddbSend) },
+        { tableNameEnvVar: 'ALERTING_TABLE_NAME' },
+      );
+      await (handler as StreamHandler)(streamEvent([outboxRecord(OUTBOX_ITEM, 'seq-1')]));
+      const command = ddbSend.mock.calls[0]?.[0] as { input: { TableName: string } };
+      expect(command.input.TableName).toBe('boxalarm-dev-alerting-table');
+    });
+
+    it('throws naming options.tableNameEnvVar when that variable is not set', async () => {
+      const { createOutboxDrainHandler } = await import('./drainHandler.js');
+      const handler = createOutboxDrainHandler(
+        'alerting-service',
+        {},
+        {
+          tableNameEnvVar: 'ALERTING_TABLE_NAME',
+        },
+      );
+      await expect((handler as StreamHandler)(streamEvent([]))).rejects.toThrow(
+        'ALERTING_TABLE_NAME is required and was not set',
+      );
+    });
+
+    it('publishes under options.source, ignoring a row that claims another source', async () => {
+      const { createOutboxDrainHandler } = await import('./drainHandler.js');
+      const send = vi.fn().mockResolvedValue({ Entries: [{ EventId: 'e-1' }] });
+      const handler = createOutboxDrainHandler(
+        'alerting-service',
+        { eventBridgeClient: fakeEventBridgeClient(send), ddbClient: fakeDdbClient(vi.fn()) },
+        { source: 'alerting-service' },
+      );
+      await (handler as StreamHandler)(
+        streamEvent([outboxRecord({ ...OUTBOX_ITEM, source: 'personnel-service' }, 'seq-1')]),
+      );
+      const command = send.mock.calls[0]?.[0] as {
+        input: { Entries: Array<{ Source: string; Detail: string }> };
+      };
+      const entry = command.input.Entries[0]!;
+      expect(entry.Source).toBe('alerting-service');
+      expect((JSON.parse(entry.Detail) as { source: string }).source).toBe('alerting-service');
+    });
+
+    it('does not publish, retry, or mark sent an eventType outside options.allowedEventTypes', async () => {
+      const { createOutboxDrainHandler } = await import('./drainHandler.js');
+      const send = vi.fn().mockResolvedValue({ Entries: [{ EventId: 'e-1' }] });
+      const ddbSend = vi.fn().mockResolvedValue({});
+      const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+      const logSpy = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+      const handler = createOutboxDrainHandler(
+        'alerting-service',
+        { eventBridgeClient: fakeEventBridgeClient(send), ddbClient: fakeDdbClient(ddbSend) },
+        {
+          allowedEventTypes: new Set(['dispatch.alert.received']),
+          metricNamespace: 'Boxalarm/alerting-bridge',
+        },
+      );
+      const result = await (handler as StreamHandler)(
+        streamEvent([
+          outboxRecord({ ...OUTBOX_ITEM, eventType: 'alerting.internal.only' }, 'seq-1'),
+        ]),
+      );
+      expect(send).not.toHaveBeenCalled();
+      expect(ddbSend).not.toHaveBeenCalled();
+      expect(result).toEqual({ batchItemFailures: [] });
+      const logged = errorSpy.mock.calls.map(
+        (call) => JSON.parse(call[0] as string) as Record<string, unknown>,
+      );
+      expect(logged).toContainEqual(
+        expect.objectContaining({
+          event: 'outbox.event_type_rejected',
+          eventType: 'alerting.internal.only',
+          service: 'alerting-service',
+        }),
+      );
+      const metrics = logSpy.mock.calls.map(
+        (call) =>
+          JSON.parse(call[0] as string) as {
+            EventTypeRejected?: number;
+            _aws?: { CloudWatchMetrics: Array<{ Namespace: string }> };
+          },
+      );
+      const rejected = metrics.find((line) => line.EventTypeRejected === 1);
+      expect(rejected?._aws?.CloudWatchMetrics[0]?.Namespace).toBe('Boxalarm/alerting-bridge');
+    });
+
+    it('publishes the allow-listed entries of a mixed batch and drops only the rejected one', async () => {
+      const { createOutboxDrainHandler } = await import('./drainHandler.js');
+      vi.spyOn(console, 'error').mockImplementation(() => undefined);
+      const send = vi.fn().mockResolvedValue({ Entries: [{ EventId: 'e-1' }] });
+      const handler = createOutboxDrainHandler(
+        'alerting-service',
+        { eventBridgeClient: fakeEventBridgeClient(send), ddbClient: fakeDdbClient(vi.fn()) },
+        { allowedEventTypes: new Set(['inspections.preplan.updated']) },
+      );
+      await (handler as StreamHandler)(
+        streamEvent([
+          outboxRecord({ ...OUTBOX_ITEM, eventType: 'not.allowed' }, 'seq-1'),
+          outboxRecord(OUTBOX_ITEM, 'seq-2'),
+        ]),
+      );
+      expect(send).toHaveBeenCalledTimes(1);
+      const command = send.mock.calls[0]?.[0] as {
+        input: { Entries: Array<{ DetailType: string }> };
+      };
+      expect(command.input.Entries.map((e) => e.DetailType)).toEqual([
+        'inspections.preplan.updated',
+      ]);
+    });
   });
 });

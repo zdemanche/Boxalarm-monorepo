@@ -99,7 +99,7 @@ describe('revokeToken handler', () => {
     mockAuthzPassthrough();
 
     const { handler } = await import('./revokeToken.js');
-    const event = buildEvent('mbr-missing');
+    const event = buildEvent('mbr-102');
     const result = await (
       handler as unknown as (
         e: GuardEvent,
@@ -131,5 +131,28 @@ describe('revokeToken handler', () => {
         PRINCIPAL,
       ),
     ).rejects.toThrow('ProvisionedThroughputExceededException');
+  });
+
+  it('returns 403 without touching DynamoDB when the path member is not the caller', async () => {
+    const send = vi.fn();
+    vi.doMock('../dynamoClient.js', () => ({
+      createDynamoClient: () => ({ send }) as unknown as DynamoDBDocumentClient,
+      readPersonnelConfig: () => ({ tableName: 'personnel-table' }),
+    }));
+    mockAuthzPassthrough();
+
+    const { handler } = await import('./revokeToken.js');
+    const event = buildEvent('mbr-someone-else');
+    const result = await (
+      handler as unknown as (
+        e: GuardEvent,
+        p: CedarPrincipalContext,
+      ) => Promise<{ statusCode: number }>
+    )(event, PRINCIPAL);
+
+    expect(result.statusCode).toBe(403);
+    expect(send).not.toHaveBeenCalled();
+    vi.doUnmock('../dynamoClient.js');
+    vi.doUnmock('@boxalarm/authz');
   });
 });

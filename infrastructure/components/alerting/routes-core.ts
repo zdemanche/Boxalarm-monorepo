@@ -5,27 +5,21 @@ import { ServiceLogGroup } from "../observability/service-log-group";
 import { IamPolicyStatement } from "../observability/observability-policy";
 import { requireEnv } from "../shared/env";
 import { lambdaCode, LAMBDA_HANDLER } from "../shared/lambda-code";
-import { AlertingRoute } from "./route-lambda";
+import { AlertingRoute, verifiedPermissionsStatement } from "./route-lambda";
 import { Escalation } from "./escalation";
+import { grantAlertingCmk } from "./alerting-cmk";
 
 export interface RoutesCoreArgs {
   env: string;
   httpApi: HttpApi;
   alertingTableArn: pulumi.Input<string>;
+  /** Alerting-table CMK — every role touching the table needs it (alerting-cmk.ts). */
+  alertingCmkArn: pulumi.Input<string>;
   alertingTableName: pulumi.Input<string>;
   logGroup: ServiceLogGroup;
   escalation: Escalation;
   policyStoreId: pulumi.Input<string>;
   permissionsBoundaryArn?: pulumi.Input<string>;
-}
-
-function verifiedPermissionsStatement(): IamPolicyStatement {
-  return {
-    Sid: "VerifiedPermissionsIsAuthorized",
-    Effect: "Allow",
-    Action: ["verifiedpermissions:IsAuthorizedWithToken"],
-    Resource: "*",
-  };
 }
 
 /**
@@ -54,6 +48,17 @@ export class RoutesCore extends pulumi.ComponentResource {
             "dynamodb:ConditionCheckItem",
             "dynamodb:TransactWriteItems",
           ],
+          Resource: args.alertingTableArn as string,
+        },
+        {
+          // runFanOut reads before it writes: queryEligibleMembers is a Query on the
+          // ELIGIBILITY partition (eligibility/selector.ts), and the escalation-threshold /
+          // tone-ladder config reads are GetItems (scheduleEscalation.ts, toneLadder.ts).
+          // Without these the synchronous fan-out fails, is logged, and ingress still
+          // returns 201 with nobody paged.
+          Sid: "AlertingTableRead",
+          Effect: "Allow" as const,
+          Action: ["dynamodb:Query", "dynamodb:GetItem"],
           Resource: args.alertingTableArn as string,
         },
         {
@@ -87,9 +92,14 @@ export class RoutesCore extends pulumi.ComponentResource {
           ESCALATION_HANDLER_ARN: args.escalation.lambda.function.arn,
           ESCALATION_SCHEDULER_ROLE_ARN: args.escalation.schedulerRole.arn,
           TONE_EVALUATOR_HANDLER_ARN: args.escalation.toneEvaluatorLambda.function.arn,
+          ESCALATION_SCHEDULE_GROUP_NAME: args.escalation.scheduleGroupName,
         },
         additionalPolicyStatements: alertingTableStatements,
         reservedConcurrentExecutions: 5,
+        // Serial per-member TransactWrite + GetItem + CreateSchedule for the whole
+        // roster; 3s ends a 30-40 member dispatch mid-roster. 29s stays under the
+        // HTTP API's 30s integration ceiling.
+        timeout: 29,
         permissionsBoundaryArn: args.permissionsBoundaryArn,
       },
       { parent: this },
@@ -211,6 +221,18 @@ export class RoutesCore extends pulumi.ComponentResource {
         reservedConcurrentExecutions: 5,
         permissionsBoundaryArn: args.permissionsBoundaryArn,
       },
+      { parent: this },
+    );
+
+    grantAlertingCmk(
+      name,
+      {
+        dispatchIngress: this.dispatchIngress.lambda.role,
+        responses: this.responses.lambda.role,
+        roster: this.roster.lambda.role,
+        detail: this.detail.lambda.role,
+      },
+      args.alertingCmkArn,
       { parent: this },
     );
 

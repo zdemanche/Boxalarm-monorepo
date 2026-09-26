@@ -56,7 +56,7 @@ export type PaletteName = keyof typeof palette;
 // types, not either one alone.
 export type PaletteColors = Record<keyof (typeof palette)['day'], string>;
 
-// "Command console" design system additions (design.draft.md §2, a11y-spec.draft.md §1.1-1.2).
+// "Command console" design system additions (docs/design.md §2, docs/a11y-spec.md §1.1-1.2).
 // Additive only — `palette` and `spacing` above keep their original shape and values so the
 // pre-existing component and its tests don't break. Every ratio below is verified in
 // index.test.ts against `meetsAA` rather than asserted in a comment.
@@ -162,7 +162,7 @@ export const typeScale = {
   mono: { size: 13, lineHeight: 18, weight: 500 },
 } as const;
 
-// Extends the existing five-step `spacing` scale without altering it (design.draft.md §2.5).
+// Extends the existing five-step `spacing` scale without altering it (docs/design.md §2.5).
 export const spacingScale = {
   '2xs': 2,
   xs: spacing.xs,

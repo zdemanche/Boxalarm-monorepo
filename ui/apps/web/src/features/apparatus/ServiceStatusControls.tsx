@@ -25,7 +25,7 @@ export function ServiceStatusControls({ unit }: { unit: ApparatusDetail }) {
     onSuccess: () => {
       setReason('');
       setFormError(null);
-      void queryClient.invalidateQueries({ queryKey: ['apparatus', unit.apparatusId] });
+      void queryClient.invalidateQueries({ queryKey: ['apparatus', unit.unitId] });
       void queryClient.invalidateQueries({ queryKey: ['apparatus'] });
     },
     onError: (error: Error) => setFormError(error.message),

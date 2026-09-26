@@ -37,19 +37,27 @@ export interface PublishSchemaVersionInput {
   readonly publishedAt: number;
 }
 
+// Function-typed properties (not methods): the implementation never uses `this`, so
+// callers and test mocks may safely destructure them.
 export interface SchemaVersionRepository {
-  publishSchemaVersion(input: PublishSchemaVersionInput): Promise<SchemaVersion>;
-  getSchemaVersion(version: string): Promise<SchemaVersion | undefined>;
-  getActiveVersionNumber(): Promise<string | undefined>;
-  getActiveSchemaVersion(): Promise<SchemaVersion | undefined>;
+  readonly publishSchemaVersion: (input: PublishSchemaVersionInput) => Promise<SchemaVersion>;
+  readonly getSchemaVersion: (version: string) => Promise<SchemaVersion | undefined>;
+  readonly getActiveVersionNumber: () => Promise<string | undefined>;
+  readonly getActiveSchemaVersion: () => Promise<SchemaVersion | undefined>;
 }
+
+// Module scope, not per call: handlers build a repository per request, so a default
+// cache created inside the factory never survived past one invocation and the
+// ACTIVE_POINTER lookup was never actually cached across requests.
+const sharedActivePointerCache = createConfigCache({ ttlMs: SCHEMA_VERSION_CACHE_TTL_MS });
 
 export function createSchemaVersionRepository(
   client: DynamoDBDocumentClient,
   tableName: string,
-  cache: ConfigCache = createConfigCache({ ttlMs: SCHEMA_VERSION_CACHE_TTL_MS }),
+  cache: ConfigCache = sharedActivePointerCache,
 ): SchemaVersionRepository {
-  return {
+  // Methods reference `repository`, never `this`, so they still work when destructured.
+  const repository: SchemaVersionRepository = {
     async publishSchemaVersion(input) {
       const item = {
         pk: 'SCHEMA_VERSION',
@@ -124,13 +132,14 @@ export function createSchemaVersionRepository(
     },
 
     async getActiveSchemaVersion() {
-      const version = await this.getActiveVersionNumber();
+      const version = await repository.getActiveVersionNumber();
       if (!version) {
         return undefined;
       }
-      return this.getSchemaVersion(version);
+      return repository.getSchemaVersion(version);
     },
   };
+  return repository;
 }
 
 let cachedRepository: SchemaVersionRepository | undefined;

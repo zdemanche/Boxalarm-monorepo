@@ -2,7 +2,13 @@ import { randomUUID } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { LocalstackContainer, type StartedLocalStackContainer } from '@testcontainers/localstack';
 import { CreateTableCommand, DynamoDBClient } from '@aws-sdk/client-dynamodb';
-import { DynamoDBDocumentClient, GetCommand, PutCommand, ScanCommand } from '@aws-sdk/lib-dynamodb';
+import {
+  DynamoDBDocumentClient,
+  GetCommand,
+  PutCommand,
+  QueryCommand,
+  ScanCommand,
+} from '@aws-sdk/lib-dynamodb';
 import { toVerifiedDeptId } from '@boxalarm/dept-scope';
 import { createManualDispatch, getDispatchById } from './repository.js';
 import { deriveIngressIdempotencyKey } from './dispatchIngressPort.js';
@@ -56,6 +62,119 @@ describe('createManualDispatch (real DynamoDB, AC2/AC4)', () => {
       externalDispatchId,
     };
   }
+
+  async function outboxRowsFor(
+    deptId: string,
+    dispatchId: string,
+  ): Promise<Array<Record<string, unknown>>> {
+    const result = await client.send(
+      new QueryCommand({
+        TableName: TABLE_NAME,
+        KeyConditionExpression: 'pk = :pk',
+        FilterExpression: 'correlationId = :dispatchId',
+        ExpressionAttributeValues: { ':pk': `DEPT#${deptId}#OUTBOX`, ':dispatchId': dispatchId },
+      }),
+    );
+    return result.Items ?? [];
+  }
+
+  describe('dispatch.alert.received bridge outbox write (PR #324 producer)', () => {
+    it.each(['MANUAL', 'CAD'] as const)(
+      'writes exactly one dispatch.alert.received OUTBOX_ENTRY for a %s dispatch, in the shape the incident consumer parses',
+      async (sourceSystem) => {
+        const deptId = toVerifiedDeptId({ deptId: 'NICHOLS' });
+        const externalId = `outbox-${sourceSystem}-${randomUUID()}`;
+        const result = await createManualDispatch(client, TABLE_NAME, {
+          deptId,
+          dispatch: dispatchPayload(externalId, sourceSystem),
+          idempotencyKey: deriveIngressIdempotencyKey(deptId, sourceSystem, externalId),
+          dispatchedAt: 1798000000,
+        });
+        const dispatchId = result.outcome === 'created' ? result.dispatchId : '';
+        expect(dispatchId).not.toBe('');
+
+        const rows = await outboxRowsFor(deptId, dispatchId);
+        expect(rows).toHaveLength(1);
+        const row = rows[0]!;
+        expect(row).toMatchObject({
+          entityType: 'OUTBOX_ENTRY',
+          eventType: 'dispatch.alert.received',
+          source: 'alerting-service',
+          correlationId: dispatchId,
+          schemaVersion: '1.0',
+          sentAt: null,
+        });
+        expect(row.payload).toEqual({
+          deptId,
+          dispatchId,
+          incidentType: 'STRUCTURE_FIRE',
+          address: '123 Main St',
+          crossStreets: 'Main & Elm',
+          narrative: 'Smoke showing',
+          dispatchedAt: 1798000000,
+        });
+        expect(typeof (row.payload as { dispatchedAt: unknown }).dispatchedAt).toBe('number');
+        expect(typeof row.ttl).toBe('number');
+      },
+    );
+
+    it('writes no outbox row for a SELF_TEST dispatch, so a member self-test never reaches the LOB bus (survivor)', async () => {
+      const deptId = toVerifiedDeptId({ deptId: 'NICHOLS' });
+      const testId = `selftest-outbox-${randomUUID()}`;
+      const result = await createManualDispatch(client, TABLE_NAME, {
+        deptId,
+        dispatch: dispatchPayload(testId, 'SELF_TEST'),
+        idempotencyKey: deriveIngressIdempotencyKey(deptId, 'SELF_TEST', testId),
+        dispatchedAt: 1798000000,
+        targetMemberId: 'mbr-1',
+        selfTestId: testId,
+        channelsTested: ['PUSH'],
+      });
+      const dispatchId = result.outcome === 'created' ? result.dispatchId : '';
+      expect(dispatchId).not.toBe('');
+
+      const alert = await client.send(
+        new GetCommand({
+          TableName: TABLE_NAME,
+          Key: { pk: `DEPT#${deptId}#DISPATCH#${dispatchId}`, sk: 'METADATA' },
+        }),
+      );
+      expect(alert.Item?.isTest).toBe(true);
+      expect(await outboxRowsFor(deptId, dispatchId)).toHaveLength(0);
+    });
+
+    it('leaves exactly one outbox row when the same dispatch is submitted twice (the cancelled transaction writes none)', async () => {
+      const deptId = toVerifiedDeptId({ deptId: 'NICHOLS' });
+      const externalId = `outbox-dup-${randomUUID()}`;
+      // The retry mints a fresh dispatchId, so count by a narrative unique to this
+      // submission rather than by correlationId — a leaked second row would carry
+      // the second dispatchId.
+      const narrative = `dup-narrative-${randomUUID()}`;
+      const input = {
+        deptId,
+        dispatch: { ...dispatchPayload(externalId), narrative },
+        idempotencyKey: deriveIngressIdempotencyKey(deptId, 'MANUAL', externalId),
+        dispatchedAt: 1798000000,
+      };
+      const first = await createManualDispatch(client, TABLE_NAME, input);
+      const second = await createManualDispatch(client, TABLE_NAME, input);
+      expect(first.outcome).toBe('created');
+      expect(second.outcome).toBe('duplicate');
+
+      const rows = await client.send(
+        new QueryCommand({
+          TableName: TABLE_NAME,
+          KeyConditionExpression: 'pk = :pk',
+          FilterExpression: 'payload.narrative = :narrative',
+          ExpressionAttributeValues: { ':pk': `DEPT#${deptId}#OUTBOX`, ':narrative': narrative },
+        }),
+      );
+      expect(rows.Items).toHaveLength(1);
+      expect(rows.Items?.[0]?.correlationId).toBe(
+        first.outcome === 'created' ? first.dispatchId : 'unreachable',
+      );
+    });
+  });
 
   it('creates a DISPATCH_ALERT with sourceSystem MANUAL and sane tone-ladder defaults (AC2)', async () => {
     const deptId = toVerifiedDeptId({ deptId: 'NICHOLS' });

@@ -170,6 +170,16 @@ const authorizedMemberQuery = withAuthorization(queryMemberAuditLog, {
   resourceId: (event) => event.queryStringParameters?.memberId ?? '',
 });
 
+// Another member's delivery history is department audit data (F1.11, Cognito(admin)):
+// ViewOwnDeliveryHistory is every-role, and Cedar cannot compare the caller with the
+// queried memberId, so a query for anyone but the caller needs ViewAlertingAuditLog.
+const authorizedOtherMemberQuery = withAuthorization(queryMemberAuditLog, {
+  actionType: 'Boxalarm::Action',
+  actionId: 'ViewAlertingAuditLog',
+  resourceType: 'Boxalarm::Department',
+  resourceId: (event) => event.requestContext.authorizer?.lambda?.deptId ?? '',
+});
+
 const authorizedDepartmentQuery = withAuthorization(queryDepartmentAudit, {
   actionType: 'Boxalarm::Action',
   actionId: 'ViewAlertingAuditLog',
@@ -188,7 +198,10 @@ export const handler = async (event: GuardEvent): Promise<APIGatewayProxyResultV
     );
   }
   if ('memberId' in parsed) {
-    return authorizedMemberQuery(event);
+    const callerSub = event.requestContext.authorizer?.lambda?.sub;
+    return parsed.memberId === callerSub
+      ? authorizedMemberQuery(event)
+      : authorizedOtherMemberQuery(event);
   }
   return authorizedDepartmentQuery(event);
 };

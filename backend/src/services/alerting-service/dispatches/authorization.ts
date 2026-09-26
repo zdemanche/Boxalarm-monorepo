@@ -44,15 +44,12 @@ export async function authorizeManualDispatchSubmission(
 ): Promise<AuthorizationOutcome> {
   try {
     const result = await client.send(
-      // TODO: E8-S3 — action/resource identifiers must match the Cedar policy schema that ticket ships
+      // Declared in infrastructure/components/authz/cedar-policies.ts (alerting officer tier).
       new IsAuthorizedWithTokenCommand({
         policyStoreId: config.policyStoreId,
         accessToken,
         action: { actionType: 'Boxalarm::Action', actionId: 'SubmitManualDispatch' },
-        resource: {
-          entityType: 'Boxalarm::AlertingDispatches',
-          entityId: `dispatches#${context.deptId}`,
-        },
+        resource: { entityType: 'Boxalarm::Department', entityId: context.deptId },
       }),
     );
     return result.decision === 'ALLOW' ? 'ALLOWED' : 'DENIED';

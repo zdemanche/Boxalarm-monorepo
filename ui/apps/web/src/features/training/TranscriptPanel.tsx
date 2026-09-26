@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { useAuth } from '../../auth/AuthContext';
 import { ApiForbiddenGate } from '../../components/ApiForbiddenGate';
@@ -22,9 +23,16 @@ export function TranscriptPanel({ memberId }: { memberId: string }) {
     queryFn: () => getTranscript(auth, memberId),
   });
 
+  const [exportError, setExportError] = useState<string | null>(null);
+
   const onExport = async (format: TranscriptExportFormat) => {
-    const blob = await downloadTranscript(auth, memberId, format);
-    triggerDownload(blob, `transcript-${memberId}.${format}`);
+    setExportError(null);
+    try {
+      const blob = await downloadTranscript(auth, memberId, format);
+      triggerDownload(blob, `transcript-${memberId}.${format}`);
+    } catch {
+      setExportError(`The ${format.toUpperCase()} export failed. Try again.`);
+    }
   };
 
   if (transcriptQuery.error) {
@@ -56,6 +64,7 @@ export function TranscriptPanel({ memberId }: { memberId: string }) {
           Export PDF
         </Button>
       </div>
+      {exportError ? <p role="alert">{exportError}</p> : null}
 
       {!hasHistory ? (
         <p>No training history on file.</p>

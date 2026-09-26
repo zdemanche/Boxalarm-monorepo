@@ -46,17 +46,24 @@ async function completePendingRun(
   deptId: ReturnType<typeof toVerifiedDeptId>,
   memberId: string,
   now: number,
+  nowMs: number,
 ): Promise<void> {
   const pointer = await getCanaryPointer(ddb, tableName, deptId);
   if (!pointer) {
     return;
   }
   const run = await getSelfTestRun(ddb, tableName, deptId, memberId, pointer.pendingTestId);
-  const latencyMs = (now - pointer.pendingRunAt) * 1000;
   const overallResult = run?.overallResult;
+  const completedAtMs = typeof run?.completedAtMs === 'number' ? run.completedAtMs : undefined;
+  const startedAtMs = pointer.pendingRunAtMs ?? pointer.pendingRunAt * 1000;
+  // Latency is the self-test run's own start-to-completion time (fan-out stamps completedAtMs
+  // when it writes the final result) — never this tick's clock, which trails the run by the
+  // whole schedule interval and would make every run FAIL. A run that has not completed has no
+  // completion time; its elapsed time so far is a lower bound and the run is a FAIL.
+  const latencyMs = Math.max((completedAtMs ?? nowMs) - startedAtMs, 0);
 
   let result: CanaryResult;
-  if (overallResult === 'PASS' && latencyMs <= LATENCY_BUDGET_MS) {
+  if (overallResult === 'PASS' && completedAtMs !== undefined && latencyMs <= LATENCY_BUDGET_MS) {
     result = 'PASS';
   } else {
     result = 'FAIL';
@@ -90,6 +97,7 @@ async function startNextRun(
   deptId: ReturnType<typeof toVerifiedDeptId>,
   memberId: string,
   now: number,
+  nowMs: number,
 ): Promise<void> {
   const cooldownAcquired = await acquireSelfTestCooldown(ddb, tableName, deptId, memberId, now);
   if (!cooldownAcquired) {
@@ -143,7 +151,11 @@ async function startNextRun(
     { onlyIfAbsent: true },
   );
 
-  await setCanaryPointer(ddb, tableName, deptId, { pendingTestId: testId, pendingRunAt: now });
+  await setCanaryPointer(ddb, tableName, deptId, {
+    pendingTestId: testId,
+    pendingRunAt: now,
+    pendingRunAtMs: nowMs,
+  });
 }
 
 export const handler = async (): Promise<void> => {
@@ -151,17 +163,18 @@ export const handler = async (): Promise<void> => {
   const deptId = toVerifiedDeptId({ deptId: config.deptId });
   const { tableName } = readAlertingConfig(process.env);
   const ddb = createDynamoClient(process.env);
-  const now = Math.floor(Date.now() / 1000);
+  const nowMs = Date.now();
+  const now = Math.floor(nowMs / 1000);
 
   try {
-    await completePendingRun(ddb, tableName, deptId, config.canaryMemberId, now);
+    await completePendingRun(ddb, tableName, deptId, config.canaryMemberId, now, nowMs);
   } catch (error) {
     logError('alerting.canary.completeFailed', error, { deptId });
     emitOutcomeMetric(METRIC_NAMESPACE, 'CanaryEvaluationFailed');
   }
 
   try {
-    await startNextRun(ddb, tableName, deptId, config.canaryMemberId, now);
+    await startNextRun(ddb, tableName, deptId, config.canaryMemberId, now, nowMs);
   } catch (error) {
     logError('alerting.canary.startFailed', error, { deptId });
     emitOutcomeMetric(METRIC_NAMESPACE, 'CanaryTriggerFailed');

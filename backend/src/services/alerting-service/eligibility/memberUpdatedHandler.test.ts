@@ -1,8 +1,23 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { SQSEvent } from 'aws-lambda';
 
-function buildSqsEvent(body: unknown): SQSEvent {
-  return { Records: [{ body: JSON.stringify(body) }] } as unknown as SQSEvent;
+/**
+ * A real EventBridge→SQS body: the rule target has no inputPath, so SQS receives the whole
+ * EventBridge event and the outbox drainer's envelope (drainHandler.ts `Detail`) is under `detail`.
+ */
+function buildSqsEvent(envelope: unknown): SQSEvent {
+  const eventBridgeEvent = {
+    version: '0',
+    id: '6a7e8feb-b491-4cf7-a9f1-bf3703467718',
+    'detail-type': 'personnel.member.updated',
+    source: 'personnel-service',
+    account: '123456789012',
+    time: '2026-09-14T00:00:00Z',
+    region: 'us-east-1',
+    resources: [],
+    detail: envelope,
+  };
+  return { Records: [{ body: JSON.stringify(eventBridgeEvent) }] } as unknown as SQSEvent;
 }
 
 const VALID_ENVELOPE = {
@@ -48,6 +63,18 @@ describe('memberUpdatedHandler', () => {
         }),
       ),
     ).rejects.toThrow('memberId');
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  it('rejects a bare envelope with no EventBridge `detail` wrapper (never what the rule delivers)', async () => {
+    const send = vi.fn();
+    vi.doMock('./dynamoClient.js', () => ({
+      createDynamoClient: () => ({ send }),
+      readAlertingConfig: () => ({ tableName: 'alerting-table' }),
+    }));
+    const { handler } = await import('./memberUpdatedHandler.js');
+    const bare = { Records: [{ body: JSON.stringify(VALID_ENVELOPE) }] } as unknown as SQSEvent;
+    await expect(handler(bare)).rejects.toThrow('missing detail');
     expect(send).not.toHaveBeenCalled();
   });
 

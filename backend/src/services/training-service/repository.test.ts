@@ -135,7 +135,7 @@ describe('listMemberAttendanceRecords', () => {
       };
     });
 
-    const records = await listMemberAttendanceRecords(client, CONFIG, 'member-1');
+    const records = await listMemberAttendanceRecords(client, CONFIG, DEPT_ID, 'member-1');
 
     expect(callCount).toBe(2);
     expect(records).toEqual([
@@ -149,7 +149,7 @@ describe('listMemberAttendanceRecords', () => {
       Items: [{ eventId: 'e1', category: 'LADDER_OPS', gsi1sk: 'TRAINING_ATTENDANCE#100' }],
     }));
 
-    const records = await listMemberAttendanceRecords(client, CONFIG, 'member-1');
+    const records = await listMemberAttendanceRecords(client, CONFIG, DEPT_ID, 'member-1');
 
     expect(records).toEqual([{ eventId: 'e1', category: 'LADDER_OPS', hours: 0, startAt: 100 }]);
   });
@@ -157,9 +157,24 @@ describe('listMemberAttendanceRecords', () => {
   it('returns an empty array for a member with no attendance history (AC3)', async () => {
     const client = fakeClient(() => ({}));
 
-    const records = await listMemberAttendanceRecords(client, CONFIG, 'member-1');
+    const records = await listMemberAttendanceRecords(client, CONFIG, DEPT_ID, 'member-1');
 
     expect(records).toEqual([]);
+  });
+
+  it("filters to the caller's department on the base-table pk (GSI1 carries no deptId)", async () => {
+    let captured: { input: Record<string, unknown> } | undefined;
+    const client = fakeClient((command) => {
+      captured = command as { input: Record<string, unknown> };
+      return {};
+    });
+
+    await listMemberAttendanceRecords(client, CONFIG, DEPT_ID, 'member-1');
+
+    expect(captured?.input.FilterExpression).toBe('begins_with(pk, :deptPrefix)');
+    expect(
+      (captured?.input.ExpressionAttributeValues as Record<string, string>)[':deptPrefix'],
+    ).toBe('DEPT#dept-001#TRAINING_EVENT#');
   });
 });
 

@@ -71,6 +71,7 @@ describe("RoutesOps webhook routes", () => {
       env: "dev",
       httpApi,
       alertingTableArn: "arn:aws:dynamodb:us-east-1:123456789012:table/alerting",
+      alertingCmkArn: "arn:aws:kms:us-east-1:123456789012:key/alerting-cmk",
       alertingTableName: "boxalarm-dev-alerting-table",
       logGroup: alertingLogGroup,
       policyStoreId: "policy-store-id",
@@ -79,9 +80,16 @@ describe("RoutesOps webhook routes", () => {
     await new Promise((r) => setImmediate(r));
     await new Promise((r) => setImmediate(r));
 
-    expect(routeAuthTypes["POST /api/v1/alerting/receipts/sms"]).not.toBe("CUSTOM");
-    expect(routeAuthTypes["POST /api/v1/alerting/receipts/voice"]).not.toBe("CUSTOM");
-    expect(routeAuthTypes["POST /api/v1/alerting/receipts/push"]).not.toBe("CUSTOM");
+    // Assert each webhook route exists first — a missing route would otherwise pass
+    // `not.toBe("CUSTOM")` vacuously (undefined !== "CUSTOM").
+    for (const routeKey of [
+      "POST /api/v1/alerting/receipts/sms",
+      "POST /api/v1/alerting/receipts/voice",
+      "POST /api/v1/alerting/receipts/push",
+    ]) {
+      expect(Object.keys(routeAuthTypes), routeKey).toContain(routeKey);
+      expect([undefined, "NONE"], routeKey).toContain(routeAuthTypes[routeKey]);
+    }
     expect(routeAuthTypes["GET /api/v1/alerting/dispatches/{dispatchId}/receipts"]).toBe("CUSTOM");
   });
 });

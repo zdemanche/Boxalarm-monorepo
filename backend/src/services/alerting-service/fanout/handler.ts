@@ -14,6 +14,7 @@ import type { DynamoDBBatchResponse, DynamoDBRecord, DynamoDBStreamEvent } from 
 import { createDynamoClient, readAlertingConfig } from '../eligibility/dynamoClient.js';
 import { getMemberEligibility, queryEligibleMembers } from '../eligibility/selector.js';
 import { resolvePushTarget, resolveSmsTarget } from '../eligibility/resolvePushTarget.js';
+import { buildChannelPagePayload } from '../channels/channelEnvelope.js';
 import { getSchedulerClient } from '../escalation/scheduleEscalation.js';
 import { scheduleRealtimeFanOutEscalation } from './fanOut.js';
 import {
@@ -155,20 +156,15 @@ function buildDispatchNormalizedEnvelope(
     source: 'alert-fanout-service',
     correlationId: dispatch.dispatchId,
     schemaVersion: '1.0',
-    payload: {
+    payload: buildChannelPagePayload({
+      deptId: dispatch.deptId,
       dispatchId: dispatch.dispatchId,
       memberId: task.memberId,
       channel: task.channel,
       channelTier: CHANNEL_TIER,
       toneSequence: TONE_SEQUENCE,
-      isTest: dispatch.isTest,
-      sourceSystem: dispatch.sourceSystem,
-      incidentType: dispatch.incidentType,
-      address: dispatch.address,
-      crossStreets: dispatch.crossStreets,
-      narrative: dispatch.narrative,
-      mapLink: dispatch.mapLink,
-    },
+      dispatch,
+    }),
   };
 }
 
@@ -415,6 +411,7 @@ async function fanOutSelfTestDispatch(
       ),
       overallResult: 'FAIL',
       eligibilityReason: 'member not found',
+      completedAtMs: Date.now(),
     });
     return;
   }
@@ -473,6 +470,7 @@ async function fanOutSelfTestDispatch(
     channelResults,
     overallResult,
     ...(eligibilityReason ? { eligibilityReason } : {}),
+    completedAtMs: Date.now(),
   });
   emitOutcomeMetric(
     SELF_TEST_METRIC_NAMESPACE,

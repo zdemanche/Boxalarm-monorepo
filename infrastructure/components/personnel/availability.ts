@@ -4,10 +4,12 @@ import { ServiceLambda } from "../observability/service-lambda";
 import { ServiceLogGroup } from "../observability/service-log-group";
 import { HttpApi } from "../api/http-api";
 import { verifiedPermissionsPolicyStatement } from "../authz/policy-store";
+import { auditMutationDenyStatement } from "../data/platform-table";
 import { lambdaCode, LAMBDA_HANDLER } from "../shared/lambda-code";
 import { requireEnv } from "../shared/env";
 import { PlatformBus } from "../messaging/platform-bus";
 import { QueueConsumer } from "../messaging/queue-consumer";
+import { grantAlertingCmk } from "../alerting/alerting-cmk";
 
 export interface AvailabilityArgs {
   env: string;
@@ -19,6 +21,8 @@ export interface AvailabilityArgs {
   httpApi: HttpApi;
   platformBus: PlatformBus;
   alertingTableArn: pulumi.Input<string>;
+  /** Alerting-table CMK — every role touching the table needs it (alerting-cmk.ts). */
+  alertingCmkArn: pulumi.Input<string>;
   alertingTableName: pulumi.Input<string>;
   alertingLogGroup: ServiceLogGroup;
   alertingPermissionsBoundaryArn?: pulumi.Input<string>;
@@ -50,6 +54,8 @@ export class Availability extends pulumi.ComponentResource {
         Action: ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:UpdateItem"],
         Resource: [arn],
       },
+      // F9.4: holding table-wide UpdateItem, never on a DEPT#*#AUDIT#* row.
+      auditMutationDenyStatement(arn),
     ]);
 
     this.expiryLambda = new ServiceLambda(
@@ -106,6 +112,12 @@ export class Availability extends pulumi.ComponentResource {
       { parent: this },
     );
 
+    // availability/handler.ts creates/deletes schedules named avail-* in the default
+    // group of this account and region only.
+    const region = aws.getRegionOutput({}, { parent: this });
+    const caller = aws.getCallerIdentityOutput({}, { parent: this });
+    const scheduleResourcePattern = pulumi.interpolate`arn:aws:scheduler:${region.name}:${caller.accountId}:schedule/default/avail-*`;
+
     this.createLambda = new ServiceLambda(
       `${name}-create`,
       {
@@ -122,15 +134,20 @@ export class Availability extends pulumi.ComponentResource {
           AVAILABILITY_SCHEDULER_ROLE_ARN: this.schedulerRole.arn,
         },
         additionalPolicyStatements: pulumi
-          .all([tableStatement, pulumi.output(args.policyStoreArn), this.schedulerRole.arn])
-          .apply(([table, policyStoreArn, schedulerRoleArn]) => [
+          .all([
+            tableStatement,
+            pulumi.output(args.policyStoreArn),
+            this.schedulerRole.arn,
+            scheduleResourcePattern,
+          ])
+          .apply(([table, policyStoreArn, schedulerRoleArn, schedulePattern]) => [
             ...table,
             verifiedPermissionsPolicyStatement(policyStoreArn),
             {
               Sid: "AvailabilityManageSchedules" as const,
               Effect: "Allow" as const,
               Action: ["scheduler:CreateSchedule", "scheduler:DeleteSchedule"],
-              Resource: `arn:aws:scheduler:*:*:schedule/default/avail-*`,
+              Resource: schedulePattern,
             },
             {
               Sid: "AvailabilityPassSchedulerRole" as const,
@@ -165,9 +182,12 @@ export class Availability extends pulumi.ComponentResource {
         environment: { ALERTING_TABLE_NAME: args.alertingTableName },
         additionalPolicyStatements: pulumi.output(args.alertingTableArn).apply((arn) => [
           {
+            // eligibility/consumer.ts: one transaction of Put (dedup marker) + Update
+            // (MEMBER_ELIGIBILITY_SNAPSHOT) items, authorized item-by-item —
+            // dynamodb:TransactWriteItems is not an IAM action.
             Sid: "AlertingTableWrite" as const,
             Effect: "Allow" as const,
-            Action: ["dynamodb:TransactWriteItems"],
+            Action: ["dynamodb:PutItem", "dynamodb:UpdateItem"],
             Resource: [arn],
           },
         ]),
@@ -187,6 +207,13 @@ export class Availability extends pulumi.ComponentResource {
         lambdaRole: this.availabilityChangedConsumer.role,
         maxReceiveCount: 5,
       },
+      { parent: this },
+    );
+
+    grantAlertingCmk(
+      name,
+      { availabilityChangedConsumer: this.availabilityChangedConsumer.role },
+      args.alertingCmkArn,
       { parent: this },
     );
 

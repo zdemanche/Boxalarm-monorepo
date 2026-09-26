@@ -138,7 +138,7 @@ describe('escalationHandler', () => {
     expect(publishEscalationTriggered).toHaveBeenCalledTimes(1);
   });
 
-  it('AC3: writes a new RECEIPT#{memberId}#VOICE item and never overwrites the push/sms receipts', async () => {
+  it('AC3: writes a new RECEIPT#{memberId}#voice item and never overwrites the push/sms receipts', async () => {
     const pushReceipt = {
       pk: ROSTER_PK,
       sk: 'RECEIPT#mbr-1#PUSH#1',
@@ -175,8 +175,15 @@ describe('escalationHandler', () => {
 
     expect(fakeDdb.items.get(`${ROSTER_PK}#RECEIPT#mbr-1#PUSH#1`)).toEqual(pushReceipt);
     expect(fakeDdb.items.get(`${ROSTER_PK}#RECEIPT#mbr-1#SMS#1`)).toEqual(smsReceipt);
-    const voiceReceipt = fakeDdb.items.get(`${ROSTER_PK}#RECEIPT#mbr-1#VOICE#1`);
-    expect(voiceReceipt).toMatchObject({ channel: 'VOICE', channelTier: 'escalation' });
+    const voiceReceipt = fakeDdb.items.get(`${ROSTER_PK}#RECEIPT#mbr-1#voice#1`);
+    expect(voiceReceipt).toMatchObject({
+      channel: 'voice',
+      channelTier: 'escalation',
+      idempotencyKey: 'dispatch-1#1#mbr-1#voice',
+    });
+    // The voice worker's own send guard lives under the uppercase key; the producer must not
+    // pre-claim it or the worker duplicate-skips the call.
+    expect(fakeDdb.items.has(`${ROSTER_PK}#RECEIPT#mbr-1#VOICE#1`)).toBe(false);
   });
 
   it('AC2: a member who has acked is skipped and no voice escalation is sent', async () => {
@@ -199,7 +206,7 @@ describe('escalationHandler', () => {
     const result = await handler(BASE_PAYLOAD);
 
     expect(result).toEqual({ outcome: 'SKIPPED_ACKED' });
-    expect(fakeDdb.items.has(`${ROSTER_PK}#RECEIPT#mbr-1#VOICE#1`)).toBe(false);
+    expect(fakeDdb.items.has(`${ROSTER_PK}#RECEIPT#mbr-1#voice#1`)).toBe(false);
     const { publishEscalationTriggered } = await import('./snsClient.js');
     expect(publishEscalationTriggered).not.toHaveBeenCalled();
   });
@@ -229,9 +236,9 @@ describe('escalationHandler', () => {
       },
       {
         pk: ROSTER_PK,
-        sk: 'RECEIPT#mbr-1#VOICE#1',
+        sk: 'RECEIPT#mbr-1#voice#1',
         entityType: 'DELIVERY_RECEIPT',
-        idempotencyKey: 'dispatch-1#1#mbr-1#VOICE',
+        idempotencyKey: 'dispatch-1#1#mbr-1#voice',
       },
     ]);
     const { createDynamoClient } = await import('../eligibility/dynamoClient.js');

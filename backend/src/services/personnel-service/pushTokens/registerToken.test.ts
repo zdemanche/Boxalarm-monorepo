@@ -140,7 +140,7 @@ describe('registerToken handler', () => {
     });
 
     const { handler } = await import('./registerToken.js');
-    const event = buildEvent('mbr-missing', { platform: 'APNS', token: 'tok-abc' });
+    const event = buildEvent('mbr-102', { platform: 'APNS', token: 'tok-abc' });
     const result = await (
       handler as unknown as (
         e: GuardEvent,
@@ -294,6 +294,32 @@ describe('registerToken handler', () => {
     }
 
     logSpy.mockRestore();
+    vi.doUnmock('../dynamoClient.js');
+    vi.doUnmock('@boxalarm/authz');
+  });
+
+  it('returns 403 without touching DynamoDB when the path member is not the caller', async () => {
+    const send = vi.fn();
+    vi.doMock('../dynamoClient.js', () => ({
+      createDynamoClient: () => ({ send }) as unknown as DynamoDBDocumentClient,
+      readPersonnelConfig: () => ({ tableName: 'personnel-table' }),
+    }));
+    vi.doMock('@boxalarm/authz', async () => {
+      const actual = await vi.importActual<typeof import('@boxalarm/authz')>('@boxalarm/authz');
+      return { ...actual, withAuthorization: (inner: unknown) => inner };
+    });
+
+    const { handler } = await import('./registerToken.js');
+    const event = buildEvent('mbr-someone-else', { platform: 'APNS', token: 'tok-abc' });
+    const result = await (
+      handler as unknown as (
+        e: GuardEvent,
+        p: CedarPrincipalContext,
+      ) => Promise<{ statusCode: number }>
+    )(event, PRINCIPAL);
+
+    expect(result.statusCode).toBe(403);
+    expect(send).not.toHaveBeenCalled();
     vi.doUnmock('../dynamoClient.js');
     vi.doUnmock('@boxalarm/authz');
   });

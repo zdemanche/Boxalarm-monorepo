@@ -10,6 +10,7 @@ import {
   TextInput,
   type DataTableColumn,
 } from '../../components/ui';
+import { canAccessPath } from '../../routing/routeTable';
 import { getCompliance } from './api';
 import type { ComplianceEntry } from './types';
 
@@ -67,7 +68,14 @@ export function CompliancePage() {
     <main id="main-content">
       <PageHeader
         title="Check compliance"
-        breadcrumbs={[{ label: 'Apparatus', to: '/apparatus' }, { label: 'Compliance' }]}
+        // ADMIN can open this report but not /apparatus, so only link the parent crumb for
+        // roles that can follow it (PR #321 review m4).
+        breadcrumbs={[
+          canAccessPath('/apparatus', auth.roles)
+            ? { label: 'Apparatus', to: '/apparatus' }
+            : { label: 'Apparatus' },
+          { label: 'Compliance' },
+        ]}
       />
 
       <div style={{ display: 'flex', gap: 'var(--bx-space-md)' }}>

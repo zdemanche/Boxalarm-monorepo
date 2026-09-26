@@ -5,6 +5,7 @@ import { FlatList, Text, useColorScheme, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useOptionalAuth } from '../../auth/AuthContext';
 import { getCertifications } from '../../features/training/api';
+import { ApiError } from '../../lib/apiClient';
 import {
   certificationStatusColor,
   certificationStatusLabel,
@@ -18,22 +19,42 @@ export function CertificationsScreen() {
   const auth = useOptionalAuth();
   const apiBaseUrl = Config.API_BASE_URL;
   const [certifications, setCertifications] = useState<Certification[]>([]);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [isSampleData, setIsSampleData] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
 
     const load = async () => {
+      setLoadError(null);
       if (auth?.isAuthenticated && apiBaseUrl && auth.memberId) {
+        // A signed-in member never sees the mock certifications: a 401/403 or any other failure
+        // is shown as an error, so a revoked member can't mistake sample data for their own
+        // credentials (PR #321 review M6).
         try {
           const result = await getCertifications(auth, apiBaseUrl, auth.memberId);
-          if (!cancelled) setCertifications(result);
-          return;
-        } catch {
-          // Falls through to the local mock below.
+          if (!cancelled) {
+            setIsSampleData(false);
+            setCertifications(result);
+          }
+        } catch (error) {
+          if (cancelled) return;
+          setCertifications([]);
+          setLoadError(
+            error instanceof ApiError &&
+              (error.problem.status === 401 || error.problem.status === 403)
+              ? 'You do not have access to these certifications.'
+              : 'Certifications could not be loaded. Check your connection and try again.',
+          );
         }
+        return;
       }
+      // Not signed in / no API configured (local dev, demo): sample data, labelled as such.
       const fallback = await mockMeRepository.getCertifications();
-      if (!cancelled) setCertifications(fallback);
+      if (!cancelled) {
+        setIsSampleData(true);
+        setCertifications(fallback);
+      }
     };
 
     void load();
@@ -44,6 +65,27 @@ export function CertificationsScreen() {
 
   return (
     <SafeAreaView style={{ flex: 1, backgroundColor: tokens.background }}>
+      {loadError ? (
+        <Text
+          accessibilityRole="alert"
+          style={{ color: tokens.error, fontSize: typography.size.sm, padding: spacing.lg }}
+        >
+          {loadError}
+        </Text>
+      ) : null}
+      {isSampleData ? (
+        <Text
+          style={{
+            color: tokens.foreground,
+            opacity: 0.7,
+            fontSize: typography.size.sm,
+            paddingHorizontal: spacing.lg,
+            paddingTop: spacing.lg,
+          }}
+        >
+          Sample data. Sign in to see your certifications.
+        </Text>
+      ) : null}
       <FlatList
         data={certifications}
         keyExtractor={(item) => item.certId}

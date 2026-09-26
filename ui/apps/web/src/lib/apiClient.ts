@@ -5,6 +5,12 @@ export interface AuthTokenSource {
   renewSilently: () => Promise<string | null>;
 }
 
+/** RFC 7807 field-level validation entry (backend `validationProblem` / config `FieldError`). */
+export interface ProblemFieldError {
+  field: string;
+  message: string;
+}
+
 export interface ProblemDetails {
   type: string;
   title: string;
@@ -12,6 +18,20 @@ export interface ProblemDetails {
   detail?: string;
   instance?: string;
   traceId: string;
+  /** RFC 7807 extension member. Untrusted server JSON: read it through problemFieldErrors(). */
+  errors?: unknown;
+}
+
+/** The well-formed `{ field, message }` entries of a problem's `errors` array; anything else
+ * is dropped rather than rendered. */
+export function problemFieldErrors(problem: ProblemDetails): ProblemFieldError[] {
+  if (!Array.isArray(problem.errors)) return [];
+  return problem.errors.flatMap((item: unknown) => {
+    if (typeof item !== 'object' || item === null) return [];
+    const record = item as { field?: unknown; message?: unknown };
+    if (typeof record.field !== 'string' || typeof record.message !== 'string') return [];
+    return [{ field: record.field, message: record.message }];
+  });
 }
 
 export class ApiError extends Error {

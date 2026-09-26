@@ -13,7 +13,7 @@ import {
 } from '../dynamoClient.js';
 import { logError as logStructuredError } from '../logger.js';
 
-interface DueCertItem {
+export interface DueCertItem {
   readonly certId: string;
   readonly memberId: string;
   readonly expiryDate: string;
@@ -39,6 +39,64 @@ function monthKey(date: Date): string {
 
 function priorMonth(date: Date): Date {
   return new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth() - 1, 1));
+}
+
+/** GSI2 DUE#CERTIFICATION#{yyyy-mm} partitions that can hold a cert that has just expired. */
+export function expiryFlipMonths(now: Date): readonly string[] {
+  return Array.from(new Set([monthKey(now), monthKey(priorMonth(now))]));
+}
+
+export interface FlipExpiredResult {
+  readonly flipped: number;
+  readonly failed: number;
+}
+
+/**
+ * Writes status=EXPIRED (conditional on CURRENT, with an audit row) for every candidate whose
+ * expiryDate has passed. That status write is the stream transition certExpiredReactor.ts
+ * consumes to set MEMBER_QUALIFICATION.currentlyEligible=false (#221). One failed flip is
+ * logged and counted, never allowed to stop the rest of the batch.
+ */
+export async function flipExpiredCertifications(
+  client: DynamoDBDocumentClient,
+  env: NodeJS.ProcessEnv,
+  deptId: VerifiedDeptId,
+  candidates: readonly DueCertItem[],
+  now: Date,
+): Promise<FlipExpiredResult> {
+  let flipped = 0;
+  let failed = 0;
+  await Promise.allSettled(
+    candidates.map(async (item) => {
+      if (
+        item.status !== 'CURRENT' ||
+        deriveCertificationStatus(item.status, item.expiryDate, now) !== 'EXPIRED'
+      ) {
+        return;
+      }
+      try {
+        const didFlip = await expireCertification(client, env, {
+          deptId,
+          memberId: item.memberId,
+          certId: item.certId,
+          correlationId: randomUUID(),
+          now,
+        });
+        if (didFlip) {
+          flipped += 1;
+        }
+      } catch (error) {
+        failed += 1;
+        logError('training.expiryScan.flipFailed', error, {
+          deptId,
+          memberId: item.memberId,
+          certId: item.certId,
+        });
+      }
+    }),
+  );
+  emitExpiryScanMetric(flipped);
+  return { flipped, failed };
 }
 
 function logError(event: string, error: unknown, context: Record<string, unknown>): void {
@@ -84,13 +142,18 @@ async function queryDueMonth(
   return items;
 }
 
+/**
+ * Standalone entrypoint (DEPT_ID-configured). Not separately deployed: the daily
+ * certificationExpiryScanner Lambda calls flipExpiredCertifications itself, so one schedule
+ * both flips expired certs and publishes lead-time notifications.
+ */
 export const handler = async (): Promise<ExpiryScanResult> => {
   const { deptId: rawDeptId } = readExpiryScanConfig(process.env);
   const deptId = toVerifiedDeptId({ deptId: rawDeptId });
   const { tableName } = readTrainingDynamoConfig(process.env);
   const client = createDynamoClient();
   const now = new Date();
-  const months = Array.from(new Set([monthKey(now), monthKey(priorMonth(now))]));
+  const months = expiryFlipMonths(now);
 
   let dueItems: readonly DueCertItem[];
   try {
@@ -103,33 +166,6 @@ export const handler = async (): Promise<ExpiryScanResult> => {
     throw error;
   }
 
-  let flipped = 0;
-  await Promise.allSettled(
-    dueItems.map(async (item) => {
-      if (deriveCertificationStatus(item.status, item.expiryDate, now) !== 'EXPIRED') {
-        return;
-      }
-      try {
-        const didFlip = await expireCertification(client, process.env, {
-          deptId,
-          memberId: item.memberId,
-          certId: item.certId,
-          correlationId: randomUUID(),
-          now,
-        });
-        if (didFlip) {
-          flipped += 1;
-        }
-      } catch (error) {
-        logError('training.expiryScan.flipFailed', error, {
-          deptId: rawDeptId,
-          memberId: item.memberId,
-          certId: item.certId,
-        });
-      }
-    }),
-  );
-
-  emitExpiryScanMetric(flipped);
+  const { flipped } = await flipExpiredCertifications(client, process.env, deptId, dueItems, now);
   return { scanned: dueItems.length, flipped };
 };

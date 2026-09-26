@@ -25,6 +25,12 @@ jobs:
           cache: npm
           cache-dependency-path: ui/package-lock.json
       - run: npm ci
+      # Dependency audit for the runtime dependency tree (PR #321 review s2). Blocks on
+      # critical advisories; lower severities are printed in the log for triage.
+      # Gate is `critical`, not `high`, because main already carries a known high advisory
+      # (image-size, transitive); tighten to `high` once that is resolved.
+      - name: Audit runtime dependencies
+        run: npm audit --omit=dev --audit-level=critical
       - run: npm run lint
       - run: npm run format
       - run: npm run typecheck

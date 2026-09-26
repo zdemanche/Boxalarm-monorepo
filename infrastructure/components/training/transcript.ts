@@ -47,10 +47,12 @@ export class Transcript extends pulumi.ComponentResource {
           .all([args.platformTableArn, args.policyStoreArn])
           .apply(([tableArn, policyStoreArn]) => [
             {
+              // listCertificationsForMember (base table) + listMemberAttendanceRecords
+              // (GSI1, AP 25). No GetItem call exists on this path.
               Sid: "TranscriptReadAccess" as const,
               Effect: "Allow" as const,
-              Action: ["dynamodb:GetItem", "dynamodb:Query"],
-              Resource: [tableArn],
+              Action: ["dynamodb:Query"],
+              Resource: [tableArn, `${tableArn}/index/GSI1`],
             },
             verifiedPermissionsPolicyStatement(policyStoreArn),
           ]),

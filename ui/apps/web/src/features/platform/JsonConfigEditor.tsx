@@ -1,7 +1,7 @@
 import { useEffect, useState, type FormEvent } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useAuth } from '../../auth/AuthContext';
-import { ApiError } from '../../lib/apiClient';
+import { ApiError, problemFieldErrors, type ProblemFieldError } from '../../lib/apiClient';
 import { ApiForbiddenGate } from '../../components/ApiForbiddenGate';
 import { Button, Card, Skeleton, Textarea } from '../../components/ui';
 import { getConfig, putConfig } from './api';
@@ -34,6 +34,7 @@ export function JsonConfigEditor({
 
   const [draft, setDraft] = useState('{}');
   const [formError, setFormError] = useState<string | null>(null);
+  const [fieldErrors, setFieldErrors] = useState<readonly ProblemFieldError[]>([]);
   const [conflictMessage, setConflictMessage] = useState<string | null>(null);
   const [forbiddenError, setForbiddenError] = useState<unknown>(null);
 
@@ -49,10 +50,12 @@ export function JsonConfigEditor({
     onSuccess: (saved) => {
       setConflictMessage(null);
       setFormError(null);
+      setFieldErrors([]);
       setForbiddenError(null);
       queryClient.setQueryData(queryKey, saved);
     },
     onError: async (error: unknown) => {
+      setFieldErrors([]);
       if (error instanceof ApiError && error.problem.status === 409) {
         setForbiddenError(null);
         setConflictMessage(
@@ -69,6 +72,10 @@ export function JsonConfigEditor({
       if (error instanceof ApiError) {
         setForbiddenError(null);
         setFormError(error.problem.detail ?? error.problem.title);
+        // RFC 7807 validation problems carry field-level errors; show each one (PR #321 m1).
+        if (error.problem.status === 400) {
+          setFieldErrors(problemFieldErrors(error.problem));
+        }
         return;
       }
       setForbiddenError(null);
@@ -79,6 +86,7 @@ export function JsonConfigEditor({
   function handleSubmit(event: FormEvent) {
     event.preventDefault();
     setFormError(null);
+    setFieldErrors([]);
     setForbiddenError(null);
     let parsed: unknown;
     try {
@@ -121,9 +129,18 @@ export function JsonConfigEditor({
             </ApiForbiddenGate>
           ) : null}
           {formError ? (
-            <p role="alert" aria-live="assertive">
-              {formError}
-            </p>
+            <div role="alert" aria-live="assertive">
+              <p>{formError}</p>
+              {fieldErrors.length > 0 ? (
+                <ul>
+                  {fieldErrors.map((fieldError) => (
+                    <li key={`${fieldError.field}:${fieldError.message}`}>
+                      <code>{fieldError.field}</code> {fieldError.message}
+                    </li>
+                  ))}
+                </ul>
+              ) : null}
+            </div>
           ) : null}
           {conflictMessage ? (
             <p role="alert" aria-live="assertive">

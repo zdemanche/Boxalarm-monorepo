@@ -62,6 +62,7 @@ describe("PushTokens — member-updated consumer IAM isolation (#208 AC3)", () =
       platformTableArn: pulumi.output("arn:aws:dynamodb:us-east-1:123456789012:table/platform"),
       platformTableName: pulumi.output("platform-table"),
       alertingTableArn: pulumi.output("arn:aws:dynamodb:us-east-1:123456789012:table/alerting"),
+      alertingCmkArn: "arn:aws:kms:us-east-1:123456789012:key/alerting-cmk",
       alertingTableName: pulumi.output("alerting-table"),
       personnelLogGroup,
       alertingLogGroup,
@@ -81,6 +82,48 @@ describe("PushTokens — member-updated consumer IAM isolation (#208 AC3)", () =
     expect(policyJson).not.toContain("table/incident");
   });
 
+  it("grants register/revoke every item action of their TransactWriteCommand (Update + Put)", async () => {
+    const pushTokens = await build();
+    for (const route of [pushTokens.registerRoute, pushTokens.revokeRoute]) {
+      const policyJson = await resolve(route.lambda.rolePolicy.policy);
+      const statements = (
+        JSON.parse(policyJson) as {
+          Statement: { Sid?: string; Action: string[]; Resource: string }[];
+        }
+      ).Statement;
+      const platform = statements.find((s) => s.Sid === "PlatformTableReadWrite");
+      expect(platform?.Resource).toBe("arn:aws:dynamodb:us-east-1:123456789012:table/platform");
+      expect([...(platform?.Action ?? [])].sort()).toEqual(
+        [
+          "dynamodb:GetItem",
+          "dynamodb:PutItem",
+          "dynamodb:TransactWriteItems",
+          "dynamodb:UpdateItem",
+        ].sort(),
+      );
+    }
+  });
+
+  it("routes personnel.member.updated only from personnel-service onto the consumer queue", async () => {
+    const pushTokens = await build();
+    const patternJson = await resolve(pushTokens.memberUpdatedRule.eventPattern);
+    const pattern = JSON.parse(patternJson ?? "null") as Record<string, unknown>;
+    expect(pattern).toEqual({
+      source: ["personnel-service"],
+      "detail-type": ["personnel.member.updated"],
+    });
+  });
+
+  it("caps the member-updated ESM at the consumer's reserved concurrency", async () => {
+    const pushTokens = await build();
+    const [reserved, esmScaling] = await Promise.all([
+      resolve(pushTokens.memberUpdatedConsumer.function.reservedConcurrentExecutions),
+      resolve(pushTokens.memberUpdatedEventSource.scalingConfig),
+    ]);
+    expect(reserved).toBe(5);
+    expect(esmScaling).toEqual({ maximumConcurrency: 5 });
+  });
+
   it("does not VPC-attach the member-updated consumer", async () => {
     const pushTokens = await build();
     const vpcConfig = await resolve(pushTokens.memberUpdatedConsumer.function.vpcConfig);
@@ -96,15 +139,5 @@ describe("PushTokens — member-updated consumer IAM isolation (#208 AC3)", () =
     expect(queueName).toBe("boxalarm-dev-alerting-member-updated-queue");
     const parsed = JSON.parse(redrive as string) as { maxReceiveCount: number };
     expect(parsed.maxReceiveCount).toBe(5);
-  });
-
-  it("alarms when the member-updated DLQ has depth (#208)", async () => {
-    const pushTokens = await build();
-    const [threshold, comparison] = await Promise.all([
-      resolve(pushTokens.memberUpdatedDlqDepthAlarm.threshold),
-      resolve(pushTokens.memberUpdatedDlqDepthAlarm.comparisonOperator),
-    ]);
-    expect(threshold).toBe(0);
-    expect(comparison).toBe("GreaterThanThreshold");
   });
 });

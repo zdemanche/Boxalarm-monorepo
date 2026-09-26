@@ -11,6 +11,7 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useChecksRepository } from '../../features/checks/apiChecksRepository';
+import { ApiError } from '../../lib/apiClient';
 import type { ChecklistTemplate, ItemResult } from '../../features/checks/types';
 import type { ChecksStackParamList } from '../../navigation/ChecksStack';
 import { useOptionalConnectivity } from '../../sync/ConnectivityContext';
@@ -22,7 +23,7 @@ function newIdempotencyKey(): string {
 
 // N4.2: the whole point of this screen is that no step waits on a network round trip - every
 // pass/fail tap is a local, instant state update, and "Complete check" resolves the same way
-// (the repository's submitChecklistRun is optimistic/local-first).
+// (the repository's submitChecklistRun writes to the local outbox; it never waits on the API).
 export function CheckRunnerScreen() {
   const route = useRoute();
   const navigation = useNavigation<NavigationProp<ChecksStackParamList>>();
@@ -32,12 +33,16 @@ export function CheckRunnerScreen() {
   const repository = useChecksRepository();
   const { isOnline } = useOptionalConnectivity();
   const [template, setTemplate] = useState<ChecklistTemplate | null>(null);
+  const [templateError, setTemplateError] = useState<string | null>(null);
+  const [templateAttempt, setTemplateAttempt] = useState(0);
   const [results, setResults] = useState<Record<string, boolean>>({});
   const [photosCaptured, setPhotosCaptured] = useState<Record<string, boolean>>({});
   const [photoError, setPhotoError] = useState<string | null>(null);
   const [startedAt] = useState(() => Date.now());
   const [idempotencyKey] = useState(newIdempotencyKey);
   const [completed, setCompleted] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+  const [submitError, setSubmitError] = useState<string | null>(null);
 
   const handleAddPhoto = async (code: string) => {
     setPhotoError(null);
@@ -54,13 +59,64 @@ export function CheckRunnerScreen() {
 
   useEffect(() => {
     let cancelled = false;
-    repository.getChecklistTemplate(apparatusId).then((result) => {
-      if (!cancelled) setTemplate(result);
-    });
+    setTemplateError(null);
+    // The repository already falls back to the local template on a network error and rethrows
+    // only real API errors (403/404/5xx) - those must be shown, not left as a blank screen
+    // (PR #321 review M10).
+    repository
+      .getChecklistTemplate(apparatusId)
+      .then((result) => {
+        if (!cancelled) setTemplate(result);
+      })
+      .catch((error: unknown) => {
+        if (cancelled) return;
+        const message =
+          error instanceof ApiError && error.problem.status === 403
+            ? 'You do not have access to this apparatus checklist.'
+            : 'The checklist could not be loaded.';
+        setTemplateError(message);
+        AccessibilityInfo.announceForAccessibility(message);
+      });
     return () => {
       cancelled = true;
     };
-  }, [apparatusId, repository]);
+  }, [apparatusId, repository, templateAttempt]);
+
+  if (!template && templateError) {
+    return (
+      <SafeAreaView
+        style={{
+          flex: 1,
+          backgroundColor: tokens.background,
+          alignItems: 'center',
+          justifyContent: 'center',
+          padding: spacing.lg,
+        }}
+      >
+        <Text
+          accessibilityRole="alert"
+          style={{ color: tokens.error, fontSize: typography.size.base, marginBottom: spacing.md }}
+        >
+          {templateError}
+        </Text>
+        <TouchableOpacity
+          accessibilityRole="button"
+          onPress={() => setTemplateAttempt((n) => n + 1)}
+          style={{
+            minHeight: touchTarget.oversized.ios,
+            minWidth: 160,
+            alignItems: 'center',
+            justifyContent: 'center',
+            backgroundColor: tokens.accent,
+            borderRadius: radius.default,
+            paddingHorizontal: spacing.lg,
+          }}
+        >
+          <Text style={{ color: tokens.background, fontWeight: '700' }}>Try again</Text>
+        </TouchableOpacity>
+      </SafeAreaView>
+    );
+  }
 
   if (!template) {
     return <SafeAreaView style={{ flex: 1, backgroundColor: tokens.background }} />;
@@ -68,22 +124,35 @@ export function CheckRunnerScreen() {
 
   const allAnswered = template.items.every((item) => item.code in results);
 
-  const handleComplete = () => {
+  const handleComplete = async () => {
+    if (submitting) return;
     const itemResults: ItemResult[] = template.items.map((item) => ({
       code: item.code,
       pass: results[item.code] ?? false,
     }));
     const durationSeconds = Math.round((Date.now() - startedAt) / 1000);
-    void repository.submitChecklistRun({
-      apparatusId,
-      templateId: template.templateId,
-      durationSeconds,
-      itemResults,
-      idempotencyKey,
-      capturedOffline: !isOnline,
-    });
-    // Optimistic: the local write already happened above; the UI confirms immediately rather
-    // than waiting on any promise settling.
+    setSubmitting(true);
+    setSubmitError(null);
+    try {
+      // Signed in, this is a local outbox enqueue (no network round trip), so awaiting it keeps
+      // N4.2's instant confirmation while guaranteeing the run was persisted before we say so.
+      // The same idempotencyKey is reused on retry, so a retried enqueue can't double-submit.
+      await repository.submitChecklistRun({
+        apparatusId,
+        templateId: template.templateId,
+        durationSeconds,
+        itemResults,
+        idempotencyKey,
+        capturedOffline: !isOnline,
+      });
+    } catch {
+      const message = 'The check could not be saved on this device. Try again.';
+      setSubmitError(message);
+      AccessibilityInfo.announceForAccessibility(message);
+      setSubmitting(false);
+      return;
+    }
+    setSubmitting(false);
     setCompleted(true);
     // The confirmation replaces the whole screen, so a screen-reader user needs an explicit
     // announcement - there's no visible element left to shift focus onto naturally.
@@ -234,10 +303,20 @@ export function CheckRunnerScreen() {
             </View>
           );
         })}
+        {submitError ? (
+          <Text
+            accessibilityRole="alert"
+            style={{ color: tokens.error, fontSize: typography.size.sm, marginTop: spacing.md }}
+          >
+            {submitError}
+          </Text>
+        ) : null}
         {allAnswered && (
           <TouchableOpacity
             accessibilityRole="button"
-            onPress={handleComplete}
+            disabled={submitting}
+            accessibilityState={{ disabled: submitting }}
+            onPress={() => void handleComplete()}
             style={{
               minHeight: touchTarget.oversized.ios,
               alignItems: 'center',

@@ -104,6 +104,7 @@ describe('voice channel worker (entrypoint-test obligation)', () => {
       '+12035550100',
       'structure-fire — 12 Main St',
       process.env,
+      { isTest: false },
     );
   });
 });

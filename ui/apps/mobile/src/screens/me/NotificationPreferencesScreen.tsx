@@ -16,6 +16,7 @@ export function NotificationPreferencesScreen() {
   const apiBaseUrl = Config.API_BASE_URL;
   const [preferences, setPreferences] = useState<NotificationPreference[]>([]);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [saveError, setSaveError] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -44,17 +45,40 @@ export function NotificationPreferencesScreen() {
 
   const togglePush = async (value: boolean) => {
     if (!auth || !apiBaseUrl) return;
-    const next = { ...certExpiry.channels, push: value };
-    setPreferences((prev) => [
-      ...prev.filter((p) => p.category !== CERT_EXPIRY_CATEGORY),
-      { category: CERT_EXPIRY_CATEGORY, channels: next },
-    ]);
-    await putNotificationPreference(auth, apiBaseUrl, CERT_EXPIRY_CATEGORY, next);
+    const previous = certExpiry.channels;
+    const next = { ...previous, push: value };
+    const withChannels = (channels: NotificationPreference['channels']) =>
+      setPreferences((prev) => [
+        ...prev.filter((p) => p.category !== CERT_EXPIRY_CATEGORY),
+        { category: CERT_EXPIRY_CATEGORY, channels },
+      ]);
+    setSaveError(null);
+    withChannels(next);
+    try {
+      await putNotificationPreference(auth, apiBaseUrl, CERT_EXPIRY_CATEGORY, next);
+    } catch {
+      // Revert the optimistic toggle: the member must not believe an expiry alert was muted or
+      // unmuted when nothing was saved (PR #321 review M11).
+      withChannels(previous);
+      setSaveError('Your change was not saved. Check your connection and try again.');
+    }
   };
 
   return (
     <SafeAreaView style={{ flex: 1, backgroundColor: tokens.background }}>
       <ScrollView contentContainerStyle={{ padding: spacing.lg }}>
+        {saveError ? (
+          <Text
+            accessibilityRole="alert"
+            style={{
+              color: tokens.error,
+              fontSize: typography.size.sm,
+              marginBottom: spacing.md,
+            }}
+          >
+            {saveError}
+          </Text>
+        ) : null}
         {loadError ? (
           <Text
             accessibilityRole="alert"

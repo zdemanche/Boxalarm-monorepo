@@ -49,13 +49,9 @@ describe('sendViaHttpProvider', () => {
     globalThis.fetch = fetchMock;
     const { sendViaHttpProvider } = await import('./httpProviderAdapter.js');
 
-    await sendViaHttpProvider(
-      'push',
-      'push-token-1',
-      'structure-fire — 12 Main St',
-      process.env,
-      client,
-    );
+    await sendViaHttpProvider('push', 'push-token-1', 'structure-fire — 12 Main St', process.env, {
+      secretsClient: client,
+    });
 
     expect(send).toHaveBeenCalledTimes(1);
     const [url, init] = fetchMock.mock.calls[0] ?? [];
@@ -81,7 +77,9 @@ describe('sendViaHttpProvider', () => {
     globalThis.fetch = fetchMock;
     const { sendViaHttpProvider } = await import('./httpProviderAdapter.js');
 
-    const pending = sendViaHttpProvider('push', 'push-token-1', 'msg', process.env, client);
+    const pending = sendViaHttpProvider('push', 'push-token-1', 'msg', process.env, {
+      secretsClient: client,
+    });
     await vi.waitFor(() => expect(fetchMock).toHaveBeenCalled());
     const signal = fetchMock.mock.calls[0]?.[1]?.signal as AbortSignal | undefined;
     signal?.dispatchEvent(new Event('abort'));
@@ -97,7 +95,7 @@ describe('sendViaHttpProvider', () => {
     const { sendViaHttpProvider } = await import('./httpProviderAdapter.js');
 
     await expect(
-      sendViaHttpProvider('push', 'push-token-1', 'msg', process.env, client),
+      sendViaHttpProvider('push', 'push-token-1', 'msg', process.env, { secretsClient: client }),
     ).rejects.toThrow('push provider responded 503');
   });
 
@@ -106,7 +104,7 @@ describe('sendViaHttpProvider', () => {
     const { sendViaHttpProvider } = await import('./httpProviderAdapter.js');
 
     await expect(
-      sendViaHttpProvider('push', 'push-token-1', 'msg', process.env, client),
+      sendViaHttpProvider('push', 'push-token-1', 'msg', process.env, { secretsClient: client }),
     ).rejects.toThrow('has no SecretString value');
   });
 
@@ -117,9 +115,90 @@ describe('sendViaHttpProvider', () => {
       .mockResolvedValue({ ok: true, status: 200 } as Response);
     const { sendViaHttpProvider } = await import('./httpProviderAdapter.js');
 
-    await sendViaHttpProvider('push', 'push-token-1', 'msg', process.env, client);
-    await sendViaHttpProvider('push', 'push-token-2', 'msg', process.env, client);
+    await sendViaHttpProvider('push', 'push-token-1', 'msg', process.env, {
+      secretsClient: client,
+    });
+    await sendViaHttpProvider('push', 'push-token-2', 'msg', process.env, {
+      secretsClient: client,
+    });
 
     expect(send).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('sendViaHttpProvider — isTest selects the sandbox credentials (architecture §1.3)', () => {
+  function secretsClientBySecretId(): {
+    client: SecretsManagerClient;
+    send: ReturnType<typeof vi.fn>;
+  } {
+    const send = vi.fn((command: { input: { SecretId: string } }) =>
+      Promise.resolve({ SecretString: `key-for-${command.input.SecretId}` }),
+    );
+    return { client: { send } as unknown as SecretsManagerClient, send };
+  }
+
+  function okFetch(): ReturnType<typeof vi.fn<typeof fetch>> {
+    const fetchMock = vi
+      .fn<typeof fetch>()
+      .mockResolvedValue({ ok: true, status: 200 } as Response);
+    globalThis.fetch = fetchMock;
+    return fetchMock;
+  }
+
+  function authHeader(fetchMock: ReturnType<typeof vi.fn<typeof fetch>>, call: number): unknown {
+    return ((fetchMock.mock.calls[call]?.[1] as RequestInit).headers as Record<string, string>)
+      .authorization;
+  }
+
+  it('authenticates an isTest send with the sandbox secret, never the prod one', async () => {
+    process.env.PUSH_PROVIDER_SANDBOX_SECRET_ID = 'push-sandbox-secret';
+    const { client, send } = secretsClientBySecretId();
+    const fetchMock = okFetch();
+    const { sendViaHttpProvider } = await import('./httpProviderAdapter.js');
+
+    await sendViaHttpProvider('push', 'push-token-1', 'msg', process.env, {
+      isTest: true,
+      secretsClient: client,
+    });
+
+    const secretIds = send.mock.calls.map(
+      (call) => (call[0] as { input: { SecretId: string } }).input.SecretId,
+    );
+    expect(secretIds).toEqual(['push-sandbox-secret']);
+    expect(authHeader(fetchMock, 0)).toBe('Bearer key-for-push-sandbox-secret');
+  });
+
+  it('fails closed when an isTest send has no sandbox secret configured (no prod fallback, no network call)', async () => {
+    delete process.env.PUSH_PROVIDER_SANDBOX_SECRET_ID;
+    const { client, send } = secretsClientBySecretId();
+    const fetchMock = okFetch();
+    const { sendViaHttpProvider } = await import('./httpProviderAdapter.js');
+
+    await expect(
+      sendViaHttpProvider('push', 'push-token-1', 'msg', process.env, {
+        isTest: true,
+        secretsClient: client,
+      }),
+    ).rejects.toThrow('PUSH_PROVIDER_SANDBOX_SECRET_ID is required and was not set');
+    expect(send).not.toHaveBeenCalled();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('keeps prod and sandbox keys in separate cache slots (a test never reuses the prod key or vice versa)', async () => {
+    process.env.PUSH_PROVIDER_SANDBOX_SECRET_ID = 'push-sandbox-secret';
+    const { client } = secretsClientBySecretId();
+    const fetchMock = okFetch();
+    const { sendViaHttpProvider } = await import('./httpProviderAdapter.js');
+
+    await sendViaHttpProvider('push', 't', 'msg', process.env, { secretsClient: client });
+    await sendViaHttpProvider('push', 't', 'msg', process.env, {
+      isTest: true,
+      secretsClient: client,
+    });
+    await sendViaHttpProvider('push', 't', 'msg', process.env, { secretsClient: client });
+
+    expect(authHeader(fetchMock, 0)).toBe('Bearer key-for-push-secret');
+    expect(authHeader(fetchMock, 1)).toBe('Bearer key-for-push-sandbox-secret');
+    expect(authHeader(fetchMock, 2)).toBe('Bearer key-for-push-secret');
   });
 });

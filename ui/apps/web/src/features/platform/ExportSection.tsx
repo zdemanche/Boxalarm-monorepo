@@ -3,7 +3,7 @@ import { useMutation, useQuery } from '@tanstack/react-query';
 import { useAuth } from '../../auth/AuthContext';
 import { ApiError } from '../../lib/apiClient';
 import { ApiForbiddenGate } from '../../components/ApiForbiddenGate';
-import { Button, Card } from '../../components/ui';
+import { Button, Card, ConfirmDialog } from '../../components/ui';
 import { startExport, getExportStatus } from './api';
 
 const EXPORT_POLL_INTERVAL_MS = 3_000;
@@ -13,6 +13,7 @@ export function ExportSection() {
   const [jobId, setJobId] = useState<string | null>(null);
   const [startError, setStartError] = useState<string | null>(null);
   const [startForbidden, setStartForbidden] = useState<unknown>(null);
+  const [confirmOpen, setConfirmOpen] = useState(false);
 
   const startMutation = useMutation({
     mutationFn: () => startExport(auth),
@@ -41,14 +42,8 @@ export function ExportSection() {
   });
 
   function handleExport() {
-    if (
-      window.confirm(
-        'Export all department data? This writes an audit event and is visible to the chief.',
-      )
-    ) {
-      setJobId(null);
-      startMutation.mutate();
-    }
+    setJobId(null);
+    startMutation.mutate();
   }
 
   const status = statusQuery.data?.status;
@@ -57,12 +52,21 @@ export function ExportSection() {
     <Card title="Full department export">
       <Button
         type="button"
-        onClick={handleExport}
+        onClick={() => setConfirmOpen(true)}
         loading={startMutation.isPending}
         variant="danger"
       >
         Export department data
       </Button>
+      <ConfirmDialog
+        open={confirmOpen}
+        onOpenChange={setConfirmOpen}
+        title="Export all of your department's data?"
+        consequence="Every department record (personnel, apparatus, incidents, training, settings) is exported to downloadable files. This writes an audit event visible to the chief."
+        confirmLabel="Export department data"
+        onConfirm={handleExport}
+        danger
+      />
       {startForbidden ? (
         <ApiForbiddenGate error={startForbidden} embedded>
           <p role="alert">Could not start the export.</p>

@@ -18,12 +18,14 @@ import {
   Download,
   FileText,
   Flame,
+  GraduationCap,
   LayoutDashboard,
   Loader2,
   LogOut,
   Menu,
   Minus,
   Moon,
+  Package,
   Plus,
   RadioTower,
   ScrollText,
@@ -58,12 +60,14 @@ export {
   Download,
   FileText,
   Flame,
+  GraduationCap,
   LayoutDashboard,
   Loader2,
   LogOut,
   Menu,
   Minus,
   Moon,
+  Package,
   Plus,
   RadioTower,
   ScrollText,
@@ -79,7 +83,7 @@ export {
 };
 export type { LucideIcon };
 
-/** Status glyph + word, one entry per status role token (design.draft.md §2.3). Colour is never
+/** Status glyph + word, one entry per status role token (docs/design.md §2.3). Colour is never
  * the only carrier — every StatusChip renders the icon and the word alongside the hue. */
 export const STATUS_ICON: Record<StatusRole, LucideIcon> = {
   ok: CheckCircle2,

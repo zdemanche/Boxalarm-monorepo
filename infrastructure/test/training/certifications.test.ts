@@ -101,6 +101,20 @@ describe("Certifications — certExpiredReactor stream consumer (#221)", () => {
     expect(comparison).toBe("GreaterThanThreshold");
   });
 
+  it("grants the reactor sqs:SendMessage on its on-failure queue so exhausted records reach it", async () => {
+    const certifications = await build();
+    const [policyJson, queueArn] = await Promise.all([
+      resolve(certifications.certExpiredReactorStreamPolicy.policy),
+      resolve(certifications.certExpiredReactorOnFailureQueue.arn),
+    ]);
+    const policy = JSON.parse(policyJson) as {
+      Statement: Array<{ Sid: string; Action: string[]; Resource: string }>;
+    };
+    const statement = policy.Statement.find((s) => s.Sid === "SendToOnFailureQueue");
+    expect(statement?.Action).toEqual(["sqs:SendMessage"]);
+    expect(statement?.Resource).toBe(queueArn);
+  });
+
   it("alarms on the EligibilityFlipFailed metric under the exact namespace the reactor emits", async () => {
     const certifications = await build();
     const [namespace, metricName] = await Promise.all([
@@ -121,13 +135,19 @@ describe("Certifications — certExpiredReactor stream consumer (#221)", () => {
     expect(scannerPolicy).not.toContain("table/alerting");
   });
 
-  it("grants the reactor role only Query and TransactWriteItems on the platform table", async () => {
+  it("grants the reactor role Query plus the item-level writes its transaction needs", async () => {
     const certifications = await build();
     const policyJson = await resolve(certifications.certExpiredReactorLambda.rolePolicy.policy);
     const policy = JSON.parse(policyJson) as {
       Statement: Array<{ Sid: string; Action: string[] }>;
     };
     const statement = policy.Statement.find((s) => s.Sid === "CertExpiredReactorAccess");
-    expect(statement?.Action).toEqual(["dynamodb:Query", "dynamodb:TransactWriteItems"]);
+    // IAM authorizes transaction items as UpdateItem/PutItem; TransactWriteItems is not
+    // an IAM action and must not be relied on.
+    expect(statement?.Action).toEqual([
+      "dynamodb:Query",
+      "dynamodb:UpdateItem",
+      "dynamodb:PutItem",
+    ]);
   });
 });

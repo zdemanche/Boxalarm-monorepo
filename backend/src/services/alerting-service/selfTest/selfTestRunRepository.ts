@@ -22,6 +22,11 @@ export interface SelfTestRunItem {
   readonly channelResults: Readonly<Record<string, SelfTestChannelResult>>;
   readonly overallResult: 'PASS' | 'FAIL' | 'RUNNING';
   readonly eligibilityReason?: string;
+  /**
+   * Epoch ms at which fan-out finished the run and wrote its final PASS/FAIL. The canary
+   * measures its ingress-to-delivery latency against this, not against its own next tick.
+   */
+  readonly completedAtMs?: number;
 }
 
 export async function upsertSelfTestRun(
@@ -46,6 +51,7 @@ export async function upsertSelfTestRun(
           channelResults: input.channelResults,
           overallResult: input.overallResult,
           ...(input.eligibilityReason ? { eligibilityReason: input.eligibilityReason } : {}),
+          ...(input.completedAtMs !== undefined ? { completedAtMs: input.completedAtMs } : {}),
           ttl: input.runAt + SELF_TEST_RUN_TTL_SECONDS,
         },
         ...(options.onlyIfAbsent ? { ConditionExpression: 'attribute_not_exists(pk)' } : {}),

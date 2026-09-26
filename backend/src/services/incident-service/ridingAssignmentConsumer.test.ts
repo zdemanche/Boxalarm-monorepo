@@ -164,23 +164,24 @@ describe('ridingAssignmentConsumer handler (entrypoint, AC6)', () => {
     expect(updateCall).toBeUndefined();
   });
 
-  it('throws on a malformed payload so SQS retries the batch', async () => {
+  it('reports a malformed payload as a batch item failure so SQS retries only that record', async () => {
     const send = vi.fn();
     const { createHandler } = await import('./ridingAssignmentConsumer.js');
     const handler = createHandler({ client: { send } as unknown as DynamoDBDocumentClient });
 
-    await expect(
-      handler(
-        {
-          Records: [{ messageId: 'm1', body: detailBody({}, { apparatusId: undefined }) }],
-        } as unknown as SQSEvent,
-        {} as never,
-        () => undefined,
-      ),
-    ).rejects.toThrow();
+    const result = await handler(
+      {
+        Records: [{ messageId: 'm1', body: detailBody({}, { apparatusId: undefined }) }],
+      } as unknown as SQSEvent,
+      {} as never,
+      () => undefined,
+    );
+
+    expect(result).toEqual({ batchItemFailures: [{ itemIdentifier: 'm1' }] });
+    expect(send).not.toHaveBeenCalled();
   });
 
-  it('throws when the DynamoDB update fails unexpectedly (fail-closed, SQS retry/DLQ)', async () => {
+  it('reports a DynamoDB update failure as a batch item failure (fail-closed, SQS retry/DLQ)', async () => {
     const send = stubSend((command) => {
       if (command.constructor.name === 'GetCommand') return {};
       throw new Error('DynamoDB unavailable');
@@ -188,12 +189,35 @@ describe('ridingAssignmentConsumer handler (entrypoint, AC6)', () => {
     const { createHandler } = await import('./ridingAssignmentConsumer.js');
     const handler = createHandler({ client: { send } as unknown as DynamoDBDocumentClient });
 
-    await expect(
-      handler(
-        { Records: [{ messageId: 'm1', body: detailBody() }] } as unknown as SQSEvent,
-        {} as never,
-        () => undefined,
-      ),
-    ).rejects.toThrow('DynamoDB unavailable');
+    const result = await handler(
+      { Records: [{ messageId: 'm1', body: detailBody() }] } as unknown as SQSEvent,
+      {} as never,
+      () => undefined,
+    );
+
+    expect(result).toEqual({ batchItemFailures: [{ itemIdentifier: 'm1' }] });
+  });
+
+  it('keeps processing the rest of the batch after one record fails, reporting only the failure', async () => {
+    const send = stubSend(() => ({}));
+    const { createHandler } = await import('./ridingAssignmentConsumer.js');
+    const handler = createHandler({ client: { send } as unknown as DynamoDBDocumentClient });
+
+    const result = await handler(
+      {
+        Records: [
+          { messageId: 'bad', body: detailBody({}, { apparatusId: undefined }) },
+          { messageId: 'good', body: detailBody({ eventId: 'evt-2' }) },
+        ],
+      } as unknown as SQSEvent,
+      {} as never,
+      () => undefined,
+    );
+
+    expect(result).toEqual({ batchItemFailures: [{ itemIdentifier: 'bad' }] });
+    const updateCall = send.mock.calls.find(
+      (call) => (call[0] as { constructor: { name: string } }).constructor.name === 'UpdateCommand',
+    );
+    expect(updateCall).toBeDefined();
   });
 });

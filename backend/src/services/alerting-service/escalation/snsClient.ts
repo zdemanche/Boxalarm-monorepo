@@ -2,6 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { PublishCommand, SNSClient } from '@aws-sdk/client-sns';
 import AWSXRay from 'aws-xray-sdk-core';
 import type { VerifiedDeptId } from '@boxalarm/dept-scope';
+import { buildChannelPagePayload, type DispatchAlertText } from '../channels/channelEnvelope.js';
 import { logError } from '../dispatches/logger.js';
 
 export interface AlertingTopicConfig {
@@ -28,6 +29,8 @@ export interface PublishEscalationTriggeredInput {
   readonly dispatchId: string;
   readonly memberId: string;
   readonly toneSequence: number;
+  /** From the dispatch's METADATA item — the voice worker speaks incidentType/address. */
+  readonly dispatch: DispatchAlertText;
 }
 
 export function buildEscalationDeduplicationId(
@@ -45,7 +48,7 @@ export async function publishEscalationTriggered(
   topicArn: string,
   input: PublishEscalationTriggeredInput,
 ): Promise<void> {
-  const { deptId, dispatchId, memberId, toneSequence } = input;
+  const { deptId, dispatchId, memberId, toneSequence, dispatch } = input;
   const envelope = {
     eventId: randomUUID(),
     eventTime: new Date().toISOString(),
@@ -53,15 +56,16 @@ export async function publishEscalationTriggered(
     source: 'escalation-scheduler',
     correlationId: dispatchId,
     schemaVersion: '1.0',
-    payload: {
+    payload: buildChannelPagePayload({
       deptId,
       dispatchId,
       memberId,
       channel: 'voice',
       channelTier: 'escalation',
       toneSequence,
+      dispatch,
       reason: 'no_ack_at_tier',
-    },
+    }),
   };
 
   try {

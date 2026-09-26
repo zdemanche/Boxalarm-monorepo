@@ -9,7 +9,7 @@ interface StatusChipProps extends HTMLAttributes<HTMLSpanElement> {
   children: ReactNode;
 }
 
-/** Colour + glyph + word, per design.draft.md §2.3 / a11y-spec.draft.md §1.8. Never render a
+/** Colour + glyph + word, per docs/design.md §2.3 / docs/a11y-spec.md §1.8. Never render a
  * status with colour alone — every call site supplies the word as `children`.
  *
  * Fill/label use the opaque `--bx-chip-fill-*` / `--bx-chip-onfill-*` pairs (a11y-spec.md §1.2),

@@ -318,6 +318,11 @@ describe('createIncident handler', () => {
       queryIncidentResponseUnits: vi.fn(),
       queryRosterCopy: vi.fn(),
     }));
+    vi.doMock('./schemaVersion/repository.js', () => ({
+      createSchemaVersionRepository: () => ({
+        getActiveSchemaVersion: vi.fn().mockResolvedValue({ version: '2026.2' }),
+      }),
+    }));
     const { handler } = await import('./createIncident.js');
 
     const result = await handler(
@@ -328,6 +333,87 @@ describe('createIncident handler', () => {
 
     expect(result).toMatchObject({ statusCode: 404 });
     vi.doUnmock('./dispatchProjection.js');
+    vi.doUnmock('./schemaVersion/repository.js');
+  });
+
+  it('still returns 404 for a missing dispatch when the concurrent schema lookup fails', async () => {
+    vi.doMock('./dispatchProjection.js', () => ({
+      getDispatchAlertCopy: vi.fn().mockResolvedValue(undefined),
+      queryIncidentResponseUnits: vi.fn(),
+      queryRosterCopy: vi.fn(),
+    }));
+    vi.doMock('./schemaVersion/repository.js', () => ({
+      createSchemaVersionRepository: () => ({
+        getActiveSchemaVersion: vi.fn().mockRejectedValue(new Error('DynamoDB unavailable')),
+      }),
+    }));
+    const { handler } = await import('./createIncident.js');
+
+    const result = await handler(
+      buildEvent(ADMIN_AUTH, { dispatchId: 'NICHOLS-MISSING' }),
+      {} as never,
+      () => undefined,
+    );
+
+    expect(result).toMatchObject({ statusCode: 404 });
+    vi.doUnmock('./dispatchProjection.js');
+    vi.doUnmock('./schemaVersion/repository.js');
+  });
+
+  it('starts the active-schema lookup without waiting for the dispatch-copy read', async () => {
+    let copyResolved = false;
+    let schemaStartedBeforeCopyResolved: boolean | undefined;
+    vi.doMock('./repository.js', async (importOriginal) => {
+      const actual = await importOriginal<typeof import('./repository.js')>();
+      return {
+        ...actual,
+        getIncidentRepository: () => ({
+          createIncident: (_deptId: string, input: CreateIncidentInput) =>
+            Promise.resolve({ ...input, sourceDispatchId: input.incidentId }),
+        }),
+        getDocumentClient: () => ({}),
+        getTableName: () => 'boxalarm-dev-incident',
+      };
+    });
+    vi.doMock('./dispatchProjection.js', () => ({
+      getDispatchAlertCopy: () =>
+        new Promise((resolve) =>
+          setTimeout(() => {
+            copyResolved = true;
+            resolve({
+              dispatchId: 'D-1',
+              deptId: 'NICHOLS',
+              incidentType: 'STRUCTURE_FIRE',
+              address: '123 Main St',
+              crossStreets: '',
+              narrative: 'n',
+              dispatchedAt: 1_798_000_000,
+            });
+          }, 10),
+        ),
+      queryIncidentResponseUnits: vi.fn().mockResolvedValue([]),
+      queryRosterCopy: vi.fn().mockResolvedValue([]),
+    }));
+    vi.doMock('./schemaVersion/repository.js', () => ({
+      createSchemaVersionRepository: () => ({
+        getActiveSchemaVersion: () => {
+          schemaStartedBeforeCopyResolved = !copyResolved;
+          return Promise.resolve({ version: '2026.2' });
+        },
+      }),
+    }));
+    const { handler } = await import('./createIncident.js');
+
+    const result = await handler(
+      buildEvent(ADMIN_AUTH, { dispatchId: 'D-1' }),
+      {} as never,
+      () => undefined,
+    );
+
+    expect(result).toMatchObject({ statusCode: 201 });
+    expect(schemaStartedBeforeCopyResolved).toBe(true);
+    vi.doUnmock('./dispatchProjection.js');
+    vi.doUnmock('./schemaVersion/repository.js');
   });
 
   it('returns 503 when DynamoDB is unavailable', async () => {

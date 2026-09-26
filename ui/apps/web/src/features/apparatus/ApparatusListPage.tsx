@@ -59,7 +59,7 @@ export function ApparatusListPage() {
       sortValue: (u) => u.unitId,
       render: (u) => (
         <Link
-          to={`/apparatus/${u.apparatusId}`}
+          to={`/apparatus/${encodeURIComponent(u.unitId)}`}
           style={{ fontFamily: 'var(--bx-font-mono)', fontWeight: 600 }}
         >
           {u.unitId}

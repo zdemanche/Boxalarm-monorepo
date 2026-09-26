@@ -100,8 +100,8 @@ async function listReceipts(
 }
 
 export const handler = withAuthorization(listReceipts, {
-  actionType: 'Alerting',
+  actionType: 'Boxalarm::Action',
   actionId: 'GetDeliveryReceipts',
-  resourceType: 'Dispatch',
+  resourceType: 'Boxalarm::Dispatch',
   resourceId: (event) => event.pathParameters?.dispatchId ?? '',
 });

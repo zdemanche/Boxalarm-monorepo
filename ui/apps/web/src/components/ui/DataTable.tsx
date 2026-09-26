@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react';
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { ArrowDown, ArrowUp } from './icons';
 import { Skeleton } from './Skeleton';
 import styles from './DataTable.module.css';
@@ -36,19 +36,21 @@ export function DataTable<T>({
 }: DataTableProps<T>) {
   const [sort, setSort] = useState<{ key: string; dir: 'asc' | 'desc' } | null>(null);
 
-  const sortedRows = (() => {
+  // Memoised so an unrelated parent re-render doesn't re-sort the whole row set (PR #321 s1).
+  const sortedRows = useMemo(() => {
     if (!sort) return rows;
     const col = columns.find((c) => c.key === sort.key);
-    if (!col?.sortValue) return rows;
+    const sortValue = col?.sortValue;
+    if (!sortValue) return rows;
     const copy = [...rows];
     copy.sort((a, b) => {
-      const av = col.sortValue!(a);
-      const bv = col.sortValue!(b);
+      const av = sortValue(a);
+      const bv = sortValue(b);
       const cmp = av < bv ? -1 : av > bv ? 1 : 0;
       return sort.dir === 'asc' ? cmp : -cmp;
     });
     return copy;
-  })();
+  }, [rows, columns, sort]);
 
   const toggleSort = (key: string) => {
     setSort((prev) => {

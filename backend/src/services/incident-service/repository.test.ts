@@ -1,8 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import {
-  ConditionalCheckFailedException,
-  TransactionCanceledException,
-} from '@aws-sdk/client-dynamodb';
+import { TransactionCanceledException } from '@aws-sdk/client-dynamodb';
 import type { DynamoDBDocumentClient } from '@aws-sdk/lib-dynamodb';
 import { toVerifiedDeptId } from '@boxalarm/dept-scope';
 import {
@@ -26,6 +23,36 @@ function fakeClient(send: (command: unknown) => unknown): DynamoDBDocumentClient
 
 interface TransactPutItem {
   readonly Put: { readonly TableName: string; readonly Item: Record<string, unknown> };
+}
+
+interface TransactUpdateItem {
+  readonly Update: {
+    readonly Key: Record<string, string>;
+    readonly ConditionExpression: string;
+    readonly UpdateExpression: string;
+    readonly ExpressionAttributeValues: Record<string, unknown>;
+  };
+}
+
+function transactItems(send: ReturnType<typeof vi.fn>): unknown[] {
+  const [command] = send.mock.calls[0] as [{ input: { TransactItems: unknown[] } }];
+  return command.input.TransactItems;
+}
+
+function entityUpdate(send: ReturnType<typeof vi.fn>): TransactUpdateItem['Update'] {
+  return (transactItems(send)[0] as TransactUpdateItem).Update;
+}
+
+function outboxPut(send: ReturnType<typeof vi.fn>): Record<string, unknown> | undefined {
+  return (transactItems(send)[1] as TransactPutItem | undefined)?.Put.Item;
+}
+
+function conditionFailedOnEntity(): TransactionCanceledException {
+  return new TransactionCanceledException({
+    message: 'Transaction cancelled',
+    $metadata: {},
+    CancellationReasons: [{ Code: 'ConditionalCheckFailed' }, { Code: 'None' }],
+  });
 }
 
 const BASE_INPUT = {
@@ -275,7 +302,7 @@ describe('createIncidentRepository', () => {
 
   it('updates the narrative denormalized field and corePayload.narrative (E6-S4 AC1)', async () => {
     const send = vi.fn().mockResolvedValue({
-      Attributes: {
+      Item: {
         pk: 'DEPT#NICHOLS#INCIDENT#NICHOLS-4471-1798000000',
         sk: 'METADATA',
         incidentId: 'NICHOLS-4471-1798000000',
@@ -299,11 +326,11 @@ describe('createIncidentRepository', () => {
       'NICHOLS-4471-1798000000',
       'updated narrative',
       2,
+      TRACE_ID,
     );
 
     expect(result.narrative).toBe('updated narrative');
-    const [command] = send.mock.calls[0] as [{ input: Record<string, unknown> }];
-    expect(command.input).toMatchObject({
+    expect(entityUpdate(send)).toMatchObject({
       Key: { pk: 'DEPT#NICHOLS#INCIDENT#NICHOLS-4471-1798000000', sk: 'METADATA' },
       ConditionExpression: 'attribute_exists(pk)',
     });
@@ -314,27 +341,29 @@ describe('createIncidentRepository', () => {
     const repository = createIncidentRepository(fakeClient(send), TABLE_NAME);
 
     await expect(
-      repository.updateNarrative(DEPT_ID, 'NICHOLS-4471-1798000000', 'x'.repeat(25_001), 2),
+      repository.updateNarrative(
+        DEPT_ID,
+        'NICHOLS-4471-1798000000',
+        'x'.repeat(25_001),
+        2,
+        TRACE_ID,
+      ),
     ).rejects.toThrow(NarrativeTooLongError);
     expect(send).not.toHaveBeenCalled();
   });
 
   it('rejects a narrative update for a nonexistent incident as IncidentNotFoundError', async () => {
-    const send = vi
-      .fn()
-      .mockRejectedValue(
-        new ConditionalCheckFailedException({ message: 'missing', $metadata: {} }),
-      );
+    const send = vi.fn().mockRejectedValue(conditionFailedOnEntity());
     const repository = createIncidentRepository(fakeClient(send), TABLE_NAME);
 
-    await expect(repository.updateNarrative(DEPT_ID, 'NICHOLS-9999', 'test', 2)).rejects.toThrow(
-      IncidentNotFoundError,
-    );
+    await expect(
+      repository.updateNarrative(DEPT_ID, 'NICHOLS-9999', 'test', 2, TRACE_ID),
+    ).rejects.toThrow(IncidentNotFoundError);
   });
 
   it('replaces corePayload and status on a guided-completion update (E6-S3 AC2)', async () => {
     const send = vi.fn().mockResolvedValue({
-      Attributes: {
+      Item: {
         pk: 'DEPT#NICHOLS#INCIDENT#NICHOLS-4471-1798000000',
         sk: 'METADATA',
         incidentId: 'NICHOLS-4471-1798000000',
@@ -358,11 +387,11 @@ describe('createIncidentRepository', () => {
       { incident_type: 'STRUCTURE_FIRE', action_taken: 'EXTINGUISH' },
       'VALIDATED',
       2,
+      TRACE_ID,
     );
 
     expect(result.status).toBe('VALIDATED');
-    const [command] = send.mock.calls[0] as [{ input: Record<string, unknown> }];
-    expect(command.input).toMatchObject({
+    expect(entityUpdate(send)).toMatchObject({
       Key: { pk: 'DEPT#NICHOLS#INCIDENT#NICHOLS-4471-1798000000', sk: 'METADATA' },
       ConditionExpression: 'attribute_exists(pk)',
     });
@@ -373,7 +402,7 @@ describe('createIncidentRepository', () => {
       'summaries stay in sync after guided completion sets incident_type (regression for PR #316 MAJOR finding)',
     async () => {
       const send = vi.fn().mockResolvedValue({
-        Attributes: {
+        Item: {
           pk: 'DEPT#NICHOLS#INCIDENT#NICHOLS-4471-1798000000',
           sk: 'METADATA',
           incidentId: 'NICHOLS-4471-1798000000',
@@ -407,28 +436,22 @@ describe('createIncidentRepository', () => {
         },
         'VALIDATED',
         2,
+        TRACE_ID,
       );
 
       expect(result.incidentType).toBe('STRUCTURE_FIRE');
       expect(result.address).toBe('123 Main St');
-      const [command] = send.mock.calls[0] as [
-        {
-          input: {
-            UpdateExpression: string;
-            ExpressionAttributeValues: Record<string, unknown>;
-          };
-        },
-      ];
-      expect(command.input.UpdateExpression).toMatch(/incidentType = :incidentType/);
-      expect(command.input.UpdateExpression).toMatch(/address = :address/);
-      expect(command.input.ExpressionAttributeValues[':incidentType']).toBe('STRUCTURE_FIRE');
-      expect(command.input.ExpressionAttributeValues[':address']).toBe('123 Main St');
+      const update = entityUpdate(send);
+      expect(update.UpdateExpression).toMatch(/incidentType = :incidentType/);
+      expect(update.UpdateExpression).toMatch(/address = :address/);
+      expect(update.ExpressionAttributeValues[':incidentType']).toBe('STRUCTURE_FIRE');
+      expect(update.ExpressionAttributeValues[':address']).toBe('123 Main St');
     },
   );
 
   it('leaves the denormalized top-level fields untouched when corePayload has no matching keys', async () => {
     const send = vi.fn().mockResolvedValue({
-      Attributes: {
+      Item: {
         pk: 'DEPT#NICHOLS#INCIDENT#NICHOLS-4471-1798000000',
         sk: 'METADATA',
         incidentId: 'NICHOLS-4471-1798000000',
@@ -452,24 +475,101 @@ describe('createIncidentRepository', () => {
       { action_taken: 'EXTINGUISH' },
       'DRAFT',
       2,
+      TRACE_ID,
     );
 
-    const [command] = send.mock.calls[0] as [{ input: { UpdateExpression: string } }];
-    expect(command.input.UpdateExpression).not.toMatch(/incidentType/);
-    expect(command.input.UpdateExpression).not.toMatch(/address/);
+    const update = entityUpdate(send);
+    expect(update.UpdateExpression).not.toMatch(/incidentType/);
+    expect(update.UpdateExpression).not.toMatch(/address/);
   });
 
   it('rejects updateCorePayload on a nonexistent incident as IncidentNotFoundError', async () => {
-    const send = vi
-      .fn()
-      .mockRejectedValue(
-        new ConditionalCheckFailedException({ message: 'missing', $metadata: {} }),
-      );
+    const send = vi.fn().mockRejectedValue(conditionFailedOnEntity());
     const repository = createIncidentRepository(fakeClient(send), TABLE_NAME);
 
     await expect(
-      repository.updateCorePayload(DEPT_ID, 'NICHOLS-9999', {}, 'VALIDATED', 2),
+      repository.updateCorePayload(DEPT_ID, 'NICHOLS-9999', {}, 'VALIDATED', 2, TRACE_ID),
     ).rejects.toThrow(IncidentNotFoundError);
+  });
+
+  it('writes an incident.narrative.updated OUTBOX_ENTRY atomically with the narrative update, without the narrative text', async () => {
+    const send = vi.fn().mockResolvedValue({ Item: { incidentId: 'NICHOLS-4471-1798000000' } });
+    const repository = createIncidentRepository(fakeClient(send), TABLE_NAME);
+
+    await repository.updateNarrative(
+      DEPT_ID,
+      'NICHOLS-4471-1798000000',
+      'secret text',
+      2,
+      TRACE_ID,
+    );
+
+    const outbox = outboxPut(send);
+    expect(outbox).toMatchObject({
+      entityType: 'OUTBOX_ENTRY',
+      eventType: 'incident.narrative.updated',
+      source: 'incident-service',
+      correlationId: TRACE_ID,
+      payload: { incidentId: 'NICHOLS-4471-1798000000', deptId: 'NICHOLS', updatedAt: 2 },
+    });
+    expect(JSON.stringify(outbox)).not.toContain('secret text');
+  });
+
+  it('writes an incident.updated OUTBOX_ENTRY atomically with the core-payload update', async () => {
+    const send = vi.fn().mockResolvedValue({ Item: { incidentId: 'NICHOLS-4471-1798000000' } });
+    const repository = createIncidentRepository(fakeClient(send), TABLE_NAME);
+
+    await repository.updateCorePayload(
+      DEPT_ID,
+      'NICHOLS-4471-1798000000',
+      { incident_type: 'STRUCTURE_FIRE' },
+      'VALIDATED',
+      2,
+      TRACE_ID,
+    );
+
+    expect(outboxPut(send)).toMatchObject({
+      entityType: 'OUTBOX_ENTRY',
+      eventType: 'incident.updated',
+      correlationId: TRACE_ID,
+      payload: {
+        incidentId: 'NICHOLS-4471-1798000000',
+        deptId: 'NICHOLS',
+        status: 'VALIDATED',
+        incidentType: 'STRUCTURE_FIRE',
+      },
+    });
+  });
+
+  it('returns the committed incident via a strongly consistent read-back', async () => {
+    const send = vi.fn().mockResolvedValue({
+      Item: { incidentId: 'NICHOLS-4471-1798000000', narrative: 'n', status: 'DRAFT' },
+    });
+    const repository = createIncidentRepository(fakeClient(send), TABLE_NAME);
+
+    const result = await repository.updateNarrative(
+      DEPT_ID,
+      'NICHOLS-4471-1798000000',
+      'n',
+      2,
+      TRACE_ID,
+    );
+
+    expect(result.narrative).toBe('n');
+    const [readBack] = send.mock.calls[1] as [{ input: Record<string, unknown> }];
+    expect(readBack.input).toMatchObject({
+      Key: { pk: 'DEPT#NICHOLS#INCIDENT#NICHOLS-4471-1798000000', sk: 'METADATA' },
+      ConsistentRead: true,
+    });
+  });
+
+  it('rethrows a non-conditional update failure without masking it as not-found', async () => {
+    const send = vi.fn().mockRejectedValue(new Error('DynamoDB unavailable'));
+    const repository = createIncidentRepository(fakeClient(send), TABLE_NAME);
+
+    await expect(
+      repository.updateCorePayload(DEPT_ID, 'NICHOLS-4471-1798000000', {}, 'DRAFT', 2, TRACE_ID),
+    ).rejects.toThrow('DynamoDB unavailable');
   });
 
   it('searches incidents by alarm-time range via GSI1, ordered by alarm time (E6-S10 AC1)', async () => {

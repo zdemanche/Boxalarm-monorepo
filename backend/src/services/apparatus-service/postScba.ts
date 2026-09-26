@@ -85,8 +85,8 @@ async function postScba(
   deps: PostScbaDeps,
 ): Promise<APIGatewayProxyResultV2> {
   const traceId = extractTraceId(event);
-  const apparatusId = event.pathParameters?.unitId;
-  if (!apparatusId) {
+  const unitId = event.pathParameters?.unitId;
+  if (!unitId) {
     return apparatusNotFoundProblem(traceId);
   }
   const deptId = toVerifiedDeptId(principal);
@@ -113,10 +113,14 @@ async function postScba(
   }
 
   const apparatusRepository = createApparatusRepository(deps.client, deps.tableName);
-  const existingApparatus = await apparatusRepository.getApparatusByUnitId(deptId, apparatusId);
+  const existingApparatus = await apparatusRepository.getApparatusByUnitId(deptId, unitId);
   if (!existingApparatus) {
     return apparatusNotFoundProblem(traceId);
   }
+  // The path segment is the display unitId (architecture: POST /{unitId}/scba). The SCBA and due
+  // items carry the resolved apparatusId, like postTestRecord does, so ScbaDueEntry.apparatusId
+  // really is an apparatusId and matches the apparatus record the web detail page loads.
+  const { apparatusId } = existingApparatus;
 
   const metadataItem = buildScbaMetadataItem(deptId, apparatusId, validation.value);
   const testItem = buildScbaTestItem(deptId, apparatusId, validation.value);

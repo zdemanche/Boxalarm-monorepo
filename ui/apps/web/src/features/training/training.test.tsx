@@ -11,6 +11,7 @@ import { RequireRole } from '../../routing/RequireRole';
 import { CertificationsPage } from './CertificationsPage';
 import { CertificationsPanel } from './CertificationsPanel';
 import { TrainingEventsPage } from './TrainingEventsPage';
+import { TranscriptPanel } from './TranscriptPanel';
 import type { Certification, TrainingEvent } from './types';
 
 const server = setupServer();
@@ -151,6 +152,12 @@ test('training officer creates an event and it appears in start order; a member 
   await user.type(screen.getByLabelText('Ends'), '2026-07-01T11:00');
   await user.click(screen.getByRole('button', { name: 'Create event' }));
   await screen.findByText('Hose drill');
+  // M9: the date inputs are controlled, so a reset form really is empty and the next create
+  // can't pass `required` while posting startAt/endAt = 0.
+  await waitFor(() => {
+    expect((screen.getByLabelText('Starts') as HTMLInputElement).value).toBe('');
+    expect((screen.getByLabelText('Ends') as HTMLInputElement).value).toBe('');
+  });
 
   const signUpButtons = screen.getAllByRole('button', { name: 'Sign up' });
   await user.click(signUpButtons[0]!);
@@ -245,6 +252,8 @@ test('training officer adds a certification and can revoke it; a non-training ro
 
   await screen.findByText(/FF1/);
   await user.click(screen.getByRole('button', { name: 'Revoke' }));
+  const dialog = await screen.findByRole('dialog', { name: 'Revoke FF1?' });
+  await user.click(within(dialog).getByRole('button', { name: 'Revoke certification' }));
 
   await waitFor(() => {
     expect(screen.getByText(/REVOKED/)).toBeTruthy();
@@ -255,4 +264,114 @@ test('training officer adds a certification and can revoke it; a non-training ro
   await screen.findByText(/FF1/);
   expect(screen.queryByRole('form', { name: 'Add certification' })).toBeNull();
   expect(screen.queryByRole('button', { name: 'Revoke' })).toBeNull();
+});
+
+test('a failed revoke stays in the confirm dialog and shows the error (m2)', async () => {
+  const cert: Certification = {
+    certId: 'CERT-1',
+    memberId: 'm-1',
+    certType: 'FF1',
+    issueDate: '2024-01-01',
+    expiryDate: '2029-01-01',
+    issuingAuthority: 'CT DESPP',
+    attachmentS3Key: null,
+    status: 'CURRENT',
+  };
+  server.use(
+    http.get('/api/v1/training/members/m-1/certifications', () => HttpResponse.json([cert])),
+    http.post('/api/v1/training/members/m-1/certifications/CERT-1/revoke', () =>
+      HttpResponse.json(
+        { type: 'about:blank', title: 'Service Unavailable', status: 503, traceId: 't' },
+        { status: 503 },
+      ),
+    ),
+  );
+
+  const user = userEvent.setup();
+  renderPanel(<CertificationsPanel memberId="m-1" />, ['TRAINING']);
+  await user.click(await screen.findByRole('button', { name: 'Revoke' }));
+  const dialog = await screen.findByRole('dialog', { name: 'Revoke FF1?' });
+  await user.click(within(dialog).getByRole('button', { name: 'Revoke certification' }));
+
+  expect(await within(dialog).findByRole('alert')).toBeTruthy();
+  expect(screen.getByRole('dialog', { name: 'Revoke FF1?' })).toBeTruthy();
+});
+
+test('failed sign-up and failed hours recording are shown, not swallowed (m2)', async () => {
+  const events: TrainingEvent[] = [
+    {
+      eventId: 'evt-1',
+      title: 'Ladder drill',
+      category: 'Ladders',
+      startAt: Date.parse('2020-01-01T18:00:00Z'),
+      endAt: Date.parse('2020-01-01T20:00:00Z'),
+      signedUp: false,
+    },
+  ];
+  server.use(
+    http.get('/api/v1/training/events', () => HttpResponse.json(events)),
+    http.post('/api/v1/training/events/:eventId/signup', () =>
+      HttpResponse.json(
+        { type: 'about:blank', title: 'Service Unavailable', status: 503, traceId: 't' },
+        { status: 503 },
+      ),
+    ),
+  );
+
+  const user = userEvent.setup();
+  renderPage(<TrainingEventsPage />, ['TRAINING'], '/training/events');
+  await screen.findByText('Ladder drill');
+
+  await user.click(screen.getByRole('button', { name: 'Sign up' }));
+  expect(await screen.findByText(/Sign-up failed/)).toBeTruthy();
+
+  const form = screen.getByRole('form', { name: 'Record hours for Ladder drill' });
+  await user.type(within(form).getByLabelText('Member ID'), 'm-1');
+  await user.type(within(form).getByLabelText('Hours'), '2');
+  await user.click(within(form).getByRole('button', { name: 'Record hours' }));
+  expect(await within(form).findByText(/Hours not recorded/)).toBeTruthy();
+});
+
+test('a failed transcript export is reported instead of an unhandled rejection (m2)', async () => {
+  server.use(
+    http.get('/api/v1/training/members/m-1/transcript', ({ request }) => {
+      if (new URL(request.url).searchParams.get('format')) {
+        return HttpResponse.json(
+          { type: 'about:blank', title: 'Service Unavailable', status: 503, traceId: 't' },
+          { status: 503 },
+        );
+      }
+      return HttpResponse.json({
+        memberId: 'm-1',
+        certifications: [],
+        attendance: [],
+        hoursByCategory: {},
+      });
+    }),
+  );
+
+  const user = userEvent.setup();
+  renderPanel(<TranscriptPanel memberId="m-1" />, ['TRAINING']);
+  await user.click(await screen.findByRole('button', { name: 'Export CSV' }));
+
+  expect(await screen.findByText('The CSV export failed. Try again.')).toBeTruthy();
+});
+
+test('certifications views are a full tabs pattern: tabpanel, aria-controls, arrow keys (m7)', async () => {
+  server.use(
+    http.get('/api/v1/training/certifications/expiring', () => HttpResponse.json([])),
+    http.get('/api/v1/personnel/members', () => HttpResponse.json({ items: [] })),
+  );
+
+  const user = userEvent.setup();
+  renderPage(<CertificationsPage />, ['TRAINING'], '/certifications');
+  const certsTab = await screen.findByRole('tab', { name: 'Certifications' });
+  const panel = screen.getByRole('tabpanel');
+  expect(certsTab.getAttribute('aria-controls')).toBe(panel.id);
+
+  certsTab.focus();
+  await user.keyboard('{ArrowRight}');
+  const expiringTab = screen.getByRole('tab', { name: 'Expiring' });
+  expect(document.activeElement).toBe(expiringTab);
+  expect(expiringTab.getAttribute('aria-selected')).toBe('true');
 });

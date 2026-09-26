@@ -14,7 +14,7 @@ import { RequireAuth } from '../routing/RequireAuth';
 import { RequireRole } from '../routing/RequireRole';
 
 const server = setupServer(
-  http.get('/api/v1/apparatus', () => HttpResponse.json({ items: [] })),
+  http.get('/api/v1/apparatus', () => HttpResponse.json({ apparatus: [] })),
   http.get('/api/v1/personnel/members', () => HttpResponse.json({ items: [] })),
 );
 beforeAll(() => server.listen());

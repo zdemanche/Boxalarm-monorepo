@@ -39,10 +39,16 @@ export const VIEW_ACTIONS = ["ViewConfig"] as const;
 // above) — including quals/handler.ts, certifications/*.ts, transcript/get.ts and
 // reports/iso.ts, whose actionType/resourceType literals ('PersonnelService', 'Training',
 // 'Member', 'TrainingReport') were normalized to the Boxalarm::Action / Boxalarm::<Type>
-// convention every other route uses, so one schema can express a policy for all of them —
-// Verified Permissions treats actionType/resourceType as the literal, unqualified entity
-// type name, and there is no way to grant an action whose type isn't declared here.
+// convention every other route uses, so one schema can express a policy for all of them.
+// decide.ts sends those namespace-qualified type names (Boxalarm::Action,
+// Boxalarm::Member, ...) verbatim, and the namespaced schema below only declares
+// Boxalarm::-qualified types — an unqualified or unknown type can never match a policy.
 export const SELF_SERVICE_ACTIONS = [
+  // F2.6 / AP 12: a member editing their OWN profile. updateMember.ts routes a request to
+  // this action only when the path memberId is the caller's sub, and re-checks that
+  // against the verified principal before writing; editing anyone else is UpdateMember
+  // (ADMIN_ONLY_ACTIONS above).
+  "SelfUpdateMember",
   "RecordAttendance",
   "ViewOwnAttendance",
   "MarkAvailability",
@@ -68,6 +74,65 @@ export const OFFICER_TIER_ACTIONS = [
   "ViewRosterTrainingHours",
 ] as const;
 export const OFFICER_TIER_GROUPS = ["OFFICER", "TRAINING", "CHIEF", "ADMIN"] as const;
+
+// alerting-service (+ personnel-service push tokens, which the alerting plane reads). None of
+// these were declared, so under STRICT validation every one failed: members could not
+// record a response, see the roster, run a self-test, or register a device for push.
+// Tiers follow architecture.md §2's alerting table: "Cognito" routes are every-role;
+// "Cognito(admin)" is "a Verified Permissions check requiring chief/admin/officer role".
+// Own-record scoping for the every-role Member actions is enforced in the handlers
+// (resourceId is the caller's sub, or a 403 when the path member is someone else),
+// because no entity attributes reach Cedar - see the department-scoping note below.
+export const ALERTING_MEMBER_ACTIONS = [
+  "ViewAlertDetail",
+  "ViewRoster",
+  "RecordResponse",
+  "SelfTestAlertPath",
+  "ReportDeviceState",
+  "ViewOwnDiagnostics",
+  "ViewOwnDeliveryHistory",
+  "RegisterPushToken",
+  "RevokePushToken",
+] as const;
+
+export const ALERTING_OFFICER_ACTIONS = [
+  "SubmitManualDispatch",
+  "GetDeliveryReceipts",
+  "ViewDiagnostics",
+  "ViewAlertingAuditLog",
+  "ViewCanaryStatus",
+  "ViewDeliveryBaseline",
+] as const;
+export const ALERTING_OFFICER_GROUPS = ["OFFICER", "CHIEF", "ADMIN"] as const;
+
+// Resource type each alerting action is sent with (backend withAuthorization call sites).
+const ALERTING_ACTION_RESOURCE: Record<
+  (typeof ALERTING_MEMBER_ACTIONS)[number] | (typeof ALERTING_OFFICER_ACTIONS)[number],
+  "Dispatch" | "Member" | "Department"
+> = {
+  ViewAlertDetail: "Department",
+  ViewRoster: "Dispatch",
+  RecordResponse: "Dispatch",
+  SelfTestAlertPath: "Member",
+  ReportDeviceState: "Member",
+  ViewOwnDiagnostics: "Member",
+  ViewOwnDeliveryHistory: "Member",
+  RegisterPushToken: "Member",
+  RevokePushToken: "Member",
+  SubmitManualDispatch: "Department",
+  GetDeliveryReceipts: "Dispatch",
+  ViewDiagnostics: "Dispatch",
+  ViewAlertingAuditLog: "Department",
+  ViewCanaryStatus: "Department",
+  ViewDeliveryBaseline: "Department",
+};
+
+const ALERTING_SCHEMA_ACTIONS = Object.fromEntries(
+  Object.entries(ALERTING_ACTION_RESOURCE).map(([action, resourceType]) => [
+    action,
+    { appliesTo: { principalTypes: ["User"], resourceTypes: [resourceType] } },
+  ]),
+);
 
 // Department-scoping is NOT expressed here as a `when` clause comparing
 // principal/resource attributes. Two things rule that out for every action above:
@@ -99,6 +164,7 @@ export const CEDAR_SCHEMA = JSON.stringify({
       ShiftSwapRequest: {},
       TrainingEvent: {},
       TrainingReport: {},
+      Dispatch: {},
     },
     actions: {
       ViewConfig: { appliesTo: { principalTypes: ["User"], resourceTypes: ["Department"] } },
@@ -114,6 +180,7 @@ export const CEDAR_SCHEMA = JSON.stringify({
         appliesTo: { principalTypes: ["User"], resourceTypes: ["Department"] },
       },
       UpdateMember: { appliesTo: { principalTypes: ["User"], resourceTypes: ["Member"] } },
+      SelfUpdateMember: { appliesTo: { principalTypes: ["User"], resourceTypes: ["Member"] } },
       RevokeSession: { appliesTo: { principalTypes: ["User"], resourceTypes: ["Member"] } },
       RecordAttendance: { appliesTo: { principalTypes: ["User"], resourceTypes: ["Member"] } },
       RecordAttendanceOnBehalf: {
@@ -157,6 +224,7 @@ export const CEDAR_SCHEMA = JSON.stringify({
       ListPendingShiftSwaps: {
         appliesTo: { principalTypes: ["User"], resourceTypes: ["Department"] },
       },
+      ...ALERTING_SCHEMA_ACTIONS,
     },
   },
 });
@@ -196,24 +264,47 @@ export function viewConfigPolicy(userPoolId: string): string {
 }
 
 /**
- * Own-record personnel/training actions (E2/E3-INFRA): every resourceId(event) call site
- * for these actions passes the caller's own principal.sub (attendance/availability/losap)
- * or a memberId the caller supplied for themself (quals/certifications/transcript/hours) —
- * open to every role rather than gated by group.
+ * Every-role personnel/training actions (E2/E3-INFRA). Two different scopes live here:
+ *  - Own-record: attendance, availability, LOSAP total and SelfUpdateMember act on the
+ *    caller's own principal.sub (the handler derives it, or rejects a path memberId that is
+ *    not the caller's).
+ *  - In-department read: GetQuals, ViewCertifications, ViewTranscript and ViewTrainingHours
+ *    take an arbitrary path memberId and nothing checks it is the caller's — any member may
+ *    read any same-department member's quals, certifications (including attachmentS3Key),
+ *    transcript and hours. The architecture's "Cognito" auth on those routes permits that;
+ *    the department boundary is enforced by the dept-scoped keys, not by Cedar (see above).
  */
-export function selfServiceActionsPolicy(): string {
-  const groupCheck = ROLE_GROUPS.map((g) => `principal in Boxalarm::UserGroup::"${g}"`).join(
-    " || ",
-  );
+export function selfServiceActionsPolicy(userPoolId: string): string {
+  const groupCheck = ROLE_GROUPS.map(
+    (g) => `principal in Boxalarm::UserGroup::"${groupEntityId(userPoolId, g)}"`,
+  ).join(" || ");
   const actions = SELF_SERVICE_ACTIONS.map((a) => `Boxalarm::Action::"${a}"`).join(", ");
   return `permit (\n  principal,\n  action in [${actions}],\n  resource\n) when {\n  ${groupCheck}\n};`;
 }
 
 /** On-behalf-of-others personnel/training actions — duty officer, training officer, or admin tier only. */
-export function officerTierActionsPolicy(): string {
+export function officerTierActionsPolicy(userPoolId: string): string {
   const groupCheck = OFFICER_TIER_GROUPS.map(
-    (g) => `principal in Boxalarm::UserGroup::"${g}"`,
+    (g) => `principal in Boxalarm::UserGroup::"${groupEntityId(userPoolId, g)}"`,
   ).join(" || ");
   const actions = OFFICER_TIER_ACTIONS.map((a) => `Boxalarm::Action::"${a}"`).join(", ");
+  return `permit (\n  principal,\n  action in [${actions}],\n  resource\n) when {\n  ${groupCheck}\n};`;
+}
+
+/** Every-role alerting actions: respond, roster, alert detail, self-test, own device/history. */
+export function alertingMemberActionsPolicy(userPoolId: string): string {
+  const groupCheck = ROLE_GROUPS.map(
+    (g) => `principal in Boxalarm::UserGroup::"${groupEntityId(userPoolId, g)}"`,
+  ).join(" || ");
+  const actions = ALERTING_MEMBER_ACTIONS.map((a) => `Boxalarm::Action::"${a}"`).join(", ");
+  return `permit (\n  principal,\n  action in [${actions}],\n  resource\n) when {\n  ${groupCheck}\n};`;
+}
+
+/** Cognito(admin) alerting actions: manual dispatch, receipts, audit, canary, diagnostics of others. */
+export function alertingOfficerActionsPolicy(userPoolId: string): string {
+  const groupCheck = ALERTING_OFFICER_GROUPS.map(
+    (g) => `principal in Boxalarm::UserGroup::"${groupEntityId(userPoolId, g)}"`,
+  ).join(" || ");
+  const actions = ALERTING_OFFICER_ACTIONS.map((a) => `Boxalarm::Action::"${a}"`).join(", ");
   return `permit (\n  principal,\n  action in [${actions}],\n  resource\n) when {\n  ${groupCheck}\n};`;
 }

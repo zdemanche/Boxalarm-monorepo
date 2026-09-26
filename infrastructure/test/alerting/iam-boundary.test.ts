@@ -16,14 +16,12 @@ async function resolve<T>(output: pulumi.Output<T>): Promise<T> {
 }
 
 describe("AlertingPlaneBoundary", () => {
-  it("denies dynamodb:* on the platform and incident tables (and their indexes/streams)", async () => {
+  it("denies dynamodb:* on the platform and incident tables, their indexes, and every stream label (stream/*)", async () => {
     const { AlertingPlaneBoundary } = await import("../../components/alerting/iam-boundary");
     const boundary = new AlertingPlaneBoundary("boundary", {
       env: "dev",
       platformTableArn: "arn:aws:dynamodb:us-east-1:123456789012:table/platform",
-      platformStreamArn: "arn:aws:dynamodb:us-east-1:123456789012:table/platform/stream/x",
       incidentTableArn: "arn:aws:dynamodb:us-east-1:123456789012:table/incident",
-      incidentStreamArn: "arn:aws:dynamodb:us-east-1:123456789012:table/incident/stream/x",
     });
     const policyJson = await resolve(boundary.policy.policy);
     const policy = JSON.parse(policyJson as unknown as string) as {
@@ -35,10 +33,10 @@ describe("AlertingPlaneBoundary", () => {
       expect.arrayContaining([
         "arn:aws:dynamodb:us-east-1:123456789012:table/platform",
         "arn:aws:dynamodb:us-east-1:123456789012:table/platform/index/*",
-        "arn:aws:dynamodb:us-east-1:123456789012:table/platform/stream/x",
+        "arn:aws:dynamodb:us-east-1:123456789012:table/platform/stream/*",
         "arn:aws:dynamodb:us-east-1:123456789012:table/incident",
         "arn:aws:dynamodb:us-east-1:123456789012:table/incident/index/*",
-        "arn:aws:dynamodb:us-east-1:123456789012:table/incident/stream/x",
+        "arn:aws:dynamodb:us-east-1:123456789012:table/incident/stream/*",
       ]),
     );
     expect(deny.Resource).not.toEqual(

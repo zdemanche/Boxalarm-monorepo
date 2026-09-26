@@ -1,6 +1,6 @@
 import { cleanup, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { afterEach, describe, expect, test } from 'vitest';
+import { afterEach, describe, expect, test, vi } from 'vitest';
 import { DataTable, type DataTableColumn } from './DataTable';
 
 afterEach(cleanup);
@@ -92,4 +92,23 @@ describe('DataTable', () => {
     renderTable({ rows: [], emptyMessage: 'No apparatus yet.' });
     expect(screen.getByText('No apparatus yet.')).toBeTruthy();
   });
+});
+
+// s1 (PR #321 review): the sort is memoised, so re-rendering with the same rows/columns/sort
+// doesn't re-sort the whole row set.
+test('does not re-sort on a re-render with unchanged inputs', async () => {
+  const sortValue = vi.fn((r: Row) => r.unitId);
+  const memoColumns: DataTableColumn<Row>[] = [
+    { key: 'unitId', header: 'Unit', sortValue, render: (r) => r.unitId },
+  ];
+  const user = userEvent.setup();
+  const view = render(
+    <DataTable caption="t" rowKey={(r) => r.id} columns={memoColumns} rows={rows} />,
+  );
+  await user.click(screen.getByRole('button', { name: /Unit/ }));
+  const callsAfterSort = sortValue.mock.calls.length;
+  expect(callsAfterSort).toBeGreaterThan(0);
+
+  view.rerender(<DataTable caption="t" rowKey={(r) => r.id} columns={memoColumns} rows={rows} />);
+  expect(sortValue.mock.calls.length).toBe(callsAfterSort);
 });

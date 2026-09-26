@@ -9,11 +9,14 @@ import { useColorScheme } from 'react-native';
 
 export type SurfaceTheme = SurfaceColors & { status: StatusColors };
 
-/** Field defaults to `cab`, matching design.draft.md §1 — the OS scheme is the only switch
- * available on native today (no manual override control exists yet on this surface). */
+/** The OS scheme is the only switch available on native today (no manual override control
+ * exists yet on this surface): `dark` -> `cab`, anything else -> `day`. An unknown (null)
+ * scheme resolves to `day`, the same as every screen still on the legacy
+ * `scheme === 'dark' ? palette.cab : palette.day` selection, so the tab bar and the screen
+ * under it can never disagree (PR #321 review m5). */
 export function useTheme(): SurfaceTheme {
   const scheme = useColorScheme();
-  const palette = scheme === 'light' ? 'day' : 'cab';
+  const palette = scheme === 'dark' ? 'cab' : 'day';
   return { ...surfacePalette[palette], status: statusPalette[palette] };
 }
 

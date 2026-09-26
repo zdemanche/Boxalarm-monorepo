@@ -4,7 +4,7 @@ import { useTheme } from './theme';
 
 // Text glyphs, not an icon library — no react-native-svg dependency to link natively in this
 // repo (CI here has no Xcode/Android SDK to build against). Shape, not colour, still carries
-// the meaning alongside the word, per design.draft.md §2.3.
+// the meaning alongside the word, per docs/design.md §2.3.
 const STATUS_GLYPH: Record<StatusRole, string> = {
   ok: '●',
   warning: '◐',

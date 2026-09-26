@@ -6,6 +6,7 @@ import type { VerifiedPermissionsClient } from '@aws-sdk/client-verifiedpermissi
 import {
   badRequestProblem,
   extractTraceId,
+  forbiddenProblem,
   notFoundProblem,
   withAuthorization,
   type CedarPrincipalContext,
@@ -189,19 +190,45 @@ async function updateMemberProfile(
   };
 }
 
+/**
+ * PUT /members/{memberId} serves two Cedar actions (F2.6, AP 12):
+ *  - SelfUpdateMember — a member editing their OWN profile; every role holds it.
+ *  - UpdateMember — editing ANOTHER member's profile; admin-only (CHIEF/ADMIN).
+ * withAuthorization binds one static action, so the request is routed to the matching
+ * guard by comparing the path memberId to the authorizer's sub. The self path re-checks
+ * memberId === principal.sub against the guard-verified principal before any write, so a
+ * SelfUpdateMember ALLOW can never reach another member's row.
+ */
 export function createHandler(
   deps: { client?: DynamoDBDocumentClient; vpClient?: VerifiedPermissionsClient } = {},
 ) {
-  return withAuthorization(
-    (event, principal) => updateMemberProfile(event, principal, deps.client),
-    {
-      actionType: 'Boxalarm::Action',
-      actionId: 'UpdateMember',
-      resourceType: 'Boxalarm::Member',
-      resourceId: (event) => event.pathParameters?.memberId ?? '',
-      ...(deps.vpClient ? { client: deps.vpClient } : {}),
+  const common = {
+    actionType: 'Boxalarm::Action',
+    resourceType: 'Boxalarm::Member',
+    resourceId: (event: GuardEvent) => event.pathParameters?.memberId ?? '',
+    ...(deps.vpClient ? { client: deps.vpClient } : {}),
+  };
+
+  const selfUpdate = withAuthorization(
+    async (event, principal) => {
+      if (event.pathParameters?.memberId !== principal.sub) {
+        return forbiddenProblem(extractTraceId(event));
+      }
+      return updateMemberProfile(event, principal, deps.client);
     },
+    { ...common, actionId: 'SelfUpdateMember' },
   );
+
+  const adminUpdate = withAuthorization(
+    (event, principal) => updateMemberProfile(event, principal, deps.client),
+    { ...common, actionId: 'UpdateMember' },
+  );
+
+  return (event: GuardEvent) => {
+    const callerSub = event.requestContext.authorizer?.lambda?.sub;
+    const memberId = event.pathParameters?.memberId;
+    return callerSub && memberId === callerSub ? selfUpdate(event) : adminUpdate(event);
+  };
 }
 
 export const handler = createHandler();

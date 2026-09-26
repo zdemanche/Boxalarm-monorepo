@@ -58,21 +58,31 @@ describe('dispatchResponseConsumer', () => {
       .mockRejectedValue(new ConditionalCheckFailedException({ message: 'stale', $metadata: {} }));
     const handler = createHandler({ client: { send } as never });
 
-    await expect(
-      handler(sqsEvent([validBody()]), {} as never, () => undefined),
-    ).resolves.toBeUndefined();
+    await expect(handler(sqsEvent([validBody()]), {} as never, () => undefined)).resolves.toEqual({
+      batchItemFailures: [],
+    });
   });
 
-  it('throws on a malformed payload', async () => {
+  it('reports only the malformed record as a batch item failure and still writes the valid one', async () => {
     const send = vi.fn().mockResolvedValue({});
     const handler = createHandler({ client: { send } as never });
 
-    await expect(
-      handler(
-        sqsEvent([JSON.stringify({ detail: { payload: {} } })]),
-        {} as never,
-        () => undefined,
-      ),
-    ).rejects.toThrow(/shape validation/);
+    const result = await handler(
+      sqsEvent([JSON.stringify({ detail: { payload: {} } }), validBody()]),
+      {} as never,
+      () => undefined,
+    );
+
+    expect(result).toEqual({ batchItemFailures: [{ itemIdentifier: 'msg-0' }] });
+    expect(send).toHaveBeenCalledTimes(1);
+  });
+
+  it('reports a failed DynamoDB write as a batch item failure', async () => {
+    const send = vi.fn().mockRejectedValue(new Error('DynamoDB unavailable'));
+    const handler = createHandler({ client: { send } as never });
+
+    const result = await handler(sqsEvent([validBody()]), {} as never, () => undefined);
+
+    expect(result).toEqual({ batchItemFailures: [{ itemIdentifier: 'msg-0' }] });
   });
 });

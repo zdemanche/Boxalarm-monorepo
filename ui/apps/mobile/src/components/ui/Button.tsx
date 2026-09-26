@@ -15,7 +15,7 @@ interface ButtonProps {
   onPress: (event: GestureResponderEvent) => void;
   variant?: ButtonVariant;
   /** 'field' = the 56dp glove-sized floor; 'alert' = the 72dp alert-path floor
-   * (a11y-spec.draft.md §1.11 target-size tokens). */
+   * (docs/a11y-spec.md §1.11 target-size tokens). */
   size?: ButtonSize;
   disabled?: boolean;
   loading?: boolean;

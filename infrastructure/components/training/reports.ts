@@ -42,10 +42,12 @@ export class Reports extends pulumi.ComponentResource {
           .all([args.platformTableArn, args.policyStoreArn])
           .apply(([tableArn, policyStoreArn]) => [
             {
+              // listAttendanceForPeriod: listTrainingEventsInRange (GSI3, AP 26), then
+              // listEventAttendees per event (base table).
               Sid: "IsoReportReadAccess" as const,
               Effect: "Allow" as const,
               Action: ["dynamodb:Query"],
-              Resource: [tableArn],
+              Resource: [tableArn, `${tableArn}/index/GSI3`],
             },
             verifiedPermissionsPolicyStatement(policyStoreArn),
           ]),

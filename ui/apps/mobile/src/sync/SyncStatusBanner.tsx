@@ -13,7 +13,7 @@ function formatRelative(iso: string | null): string {
 
 // architecture.md's sync engine section: a persistent, dismissible banner shows queued-item
 // count and last-sync time; a failed item surfaces its own retry action and is never silently
-// dropped - so dismissal is blocked while any item is FAILED, matching F7.7's "never silently
+// dropped - so dismissal is blocked while any item is FAILED or REJECTED, matching F7.7's "never silently
 // dropped" rule applied to the write side.
 export function SyncStatusBanner() {
   const scheme = useColorScheme();
@@ -31,11 +31,38 @@ export function SyncStatusBanner() {
     void syncManager.retry(item.id);
   };
 
+  // Only offered for REJECTED items: the server refused them, so an automatic retry can never
+  // succeed and the user must decide - discarding is an explicit choice, never a silent drop.
+  const handleDiscard = (item: SyncItem) => {
+    AccessibilityInfo.announceForAccessibility(`Discarded ${item.label}`);
+    void syncManager.discard(item.id);
+  };
+
   if (!status || dismissed) return null;
 
   const failed = status.items.filter((item) => item.status === 'FAILED');
-  const pending = status.items.filter((item) => item.status !== 'FAILED');
-  const hasFailed = failed.length > 0;
+  const rejected = status.items.filter((item) => item.status === 'REJECTED');
+  const pending = status.items.filter(
+    (item) => item.status === 'QUEUED' || item.status === 'SYNCING',
+  );
+  const hasFailed = failed.length > 0 || rejected.length > 0;
+
+  const actionStyle = {
+    minHeight: touchTarget.baseline.ios,
+    justifyContent: 'center' as const,
+    paddingHorizontal: spacing.sm,
+  };
+  const actionTextStyle = {
+    color: tokens.error,
+    fontWeight: '600' as const,
+    fontSize: typography.size.sm,
+  };
+  const rowStyle = {
+    flexDirection: 'row' as const,
+    alignItems: 'center' as const,
+    justifyContent: 'space-between' as const,
+    marginTop: spacing.xs,
+  };
 
   return (
     <View
@@ -56,31 +83,50 @@ export function SyncStatusBanner() {
         </Text>
       )}
       {failed.map((item) => (
-        <View
-          key={item.id}
-          style={{
-            flexDirection: 'row',
-            alignItems: 'center',
-            justifyContent: 'space-between',
-            marginTop: spacing.xs,
-          }}
-        >
+        <View key={item.id} style={rowStyle}>
           <Text style={{ color: tokens.error, fontSize: typography.size.sm, flexShrink: 1 }}>
             {item.label} failed to sync
           </Text>
           <TouchableOpacity
             accessibilityRole="button"
+            accessibilityLabel={`Retry ${item.label}`}
             onPress={() => handleRetry(item)}
-            style={{
-              minHeight: touchTarget.baseline.ios,
-              justifyContent: 'center',
-              paddingHorizontal: spacing.sm,
-            }}
+            style={actionStyle}
           >
-            <Text style={{ color: tokens.error, fontWeight: '600', fontSize: typography.size.sm }}>
-              Retry
-            </Text>
+            <Text style={actionTextStyle}>Retry</Text>
           </TouchableOpacity>
+        </View>
+      ))}
+      {rejected.map((item) => (
+        <View key={item.id} style={rowStyle}>
+          <View style={{ flexShrink: 1 }}>
+            <Text style={{ color: tokens.error, fontSize: typography.size.sm }}>
+              {item.label} was rejected
+            </Text>
+            {item.lastError && (
+              <Text style={{ color: tokens.error, fontSize: typography.size.sm, opacity: 0.8 }}>
+                {item.lastError}
+              </Text>
+            )}
+          </View>
+          <View style={{ flexDirection: 'row' }}>
+            <TouchableOpacity
+              accessibilityRole="button"
+              accessibilityLabel={`Retry ${item.label}`}
+              onPress={() => handleRetry(item)}
+              style={actionStyle}
+            >
+              <Text style={actionTextStyle}>Retry</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              accessibilityRole="button"
+              accessibilityLabel={`Discard ${item.label}`}
+              onPress={() => handleDiscard(item)}
+              style={actionStyle}
+            >
+              <Text style={actionTextStyle}>Discard</Text>
+            </TouchableOpacity>
+          </View>
         </View>
       ))}
       {!hasFailed && pending.length === 0 && (

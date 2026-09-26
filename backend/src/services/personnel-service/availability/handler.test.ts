@@ -122,6 +122,52 @@ describe('personnel availability handler', () => {
     expect(actions.sort()).toEqual(['ACTIVATE', 'REVERT']);
   });
 
+  it('gives the ACTIVATE and REVERT schedules distinct <=64-char avail- names for a realistic 36-char sub and deptId nichols-fd (MAJ-3)', async () => {
+    const sub = '3f9a1c2e-7b4d-4e8f-9a0b-1c2d3e4f5a6b';
+    const principal = { sub, deptId: 'nichols-fd', 'cognito:groups': 'member' };
+    const send = vi.fn().mockResolvedValue({});
+    vi.doMock('./dynamoClient.js', async (importOriginal) => {
+      const actual = await importOriginal<typeof import('./dynamoClient.js')>();
+      return { ...actual, createDdbClient: () => ({ send }) as unknown as DynamoDBDocumentClient };
+    });
+    const schedulerSend = vi.fn().mockResolvedValue({});
+    const { createAvailability } = await import('./handler.js');
+    const result = await createAvailability(
+      buildEvent(
+        { pathParameters: { memberId: sub } },
+        principal,
+        // Future-dated (10-digit epoch seconds), so both ACTIVATE and REVERT are scheduled.
+        { startAt: FUTURE_START, endAt: FUTURE_END },
+      ),
+      principal,
+      { schedulerClient: { send: schedulerSend } as unknown as SchedulerClient },
+    );
+
+    expect(result).toMatchObject({ statusCode: 201 });
+    const inputs = schedulerSend.mock.calls.map(
+      (call) => (call[0] as { input: { Name: string; ActionAfterCompletion: string } }).input,
+    );
+    const names = inputs.map((input) => input.Name);
+    expect(names).toHaveLength(2);
+    expect(new Set(names).size).toBe(2);
+    for (const name of names) {
+      expect(name.length).toBeLessThanOrEqual(64);
+      expect(name).toMatch(/^avail-[0-9a-f]{40}-(start|end)$/);
+    }
+    // SUG-1: one-time schedules delete themselves after firing.
+    expect(inputs.every((input) => input.ActionAfterCompletion === 'DELETE')).toBe(true);
+  });
+
+  it('derives a deterministic schedule base name per (dept, member, startAt)', async () => {
+    const { availabilityScheduleBaseName } = await import('./handler.js');
+    const sub = '3f9a1c2e-7b4d-4e8f-9a0b-1c2d3e4f5a6b';
+    const a = availabilityScheduleBaseName('nichols-fd', sub, 1_790_000_000);
+    expect(a).toBe(availabilityScheduleBaseName('nichols-fd', sub, 1_790_000_000));
+    expect(a).not.toBe(availabilityScheduleBaseName('nichols-fd', sub, 1_790_000_001));
+    expect(a).not.toBe(availabilityScheduleBaseName('other-fd', sub, 1_790_000_000));
+    expect(`${a}-start`.length).toBeLessThanOrEqual(64);
+  });
+
   it('403s with a detail explaining the mismatch when memberId does not match the authenticated principal (self-only)', async () => {
     const { createAvailability } = await import('./handler.js');
     const result = await createAvailability(

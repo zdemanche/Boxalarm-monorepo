@@ -1,104 +1,117 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { marshall } from '@aws-sdk/util-dynamodb';
 import type { EventBridgeClient } from '@aws-sdk/client-eventbridge';
+import type { DynamoDBDocumentClient } from '@aws-sdk/lib-dynamodb';
 import type { DynamoDBBatchResponse, DynamoDBRecord, DynamoDBStreamEvent } from 'aws-lambda';
+import { toVerifiedDeptId } from '@boxalarm/dept-scope';
+import { buildOutboxRecord } from '@boxalarm/outbox';
+import { BRIDGE_EVENT_TYPES } from './platformBusBridge.js';
 
-type LambdaNewImage = NonNullable<NonNullable<DynamoDBRecord['dynamodb']>['NewImage']>;
+// Generic drain behavior (chunking, partial FailedEntryCount, mixed-batch failure,
+// MODIFY/REMOVE skip, mark-sent) is covered once in
+// packages/outbox/src/drainHandler.test.ts. This file pins only the alerting wiring:
+// table env, fixed Source, and the bridge allow-list.
+
 type StreamHandler = (e: DynamoDBStreamEvent) => Promise<DynamoDBBatchResponse>;
 
-function fakeClient(send: (command: unknown) => Promise<unknown>): EventBridgeClient {
-  return { send } as unknown as EventBridgeClient;
-}
+const DEPT_ID = toVerifiedDeptId({ deptId: 'NICHOLS' });
 
-function streamEvent(records: DynamoDBStreamEvent['Records']): DynamoDBStreamEvent {
-  return { Records: records };
-}
-
-function newImage(item: Record<string, unknown>): LambdaNewImage {
-  return marshall(item) as unknown as LambdaNewImage;
-}
-
-function outboxRecord(
-  item: Record<string, unknown>,
-  sequenceNumber: string,
-  eventName: 'INSERT' | 'MODIFY' | 'REMOVE' = 'INSERT',
-): DynamoDBRecord {
+function insertRecord(item: Record<string, unknown>, sequenceNumber: string): DynamoDBRecord {
   return {
-    eventName,
-    dynamodb: { NewImage: newImage(item), SequenceNumber: sequenceNumber },
+    eventName: 'INSERT',
+    dynamodb: { NewImage: marshall(item) as never, SequenceNumber: sequenceNumber },
   };
 }
 
-const OUTBOX_ITEM = {
-  entityType: 'OUTBOX_ENTRY',
-  eventId: 'evt-1',
-  eventTime: '2026-09-14T00:00:00.000Z',
-  eventType: 'dispatch.alert.received',
-  source: 'alerting-service',
-  correlationId: 'NICHOLS-MANUAL-1798000000-abcd1234',
-  schemaVersion: '1.0',
-  payload: { dispatchId: 'NICHOLS-MANUAL-1798000000-abcd1234', incidentType: 'STRUCTURE_FIRE' },
-};
+function outboxItem(eventType: string, source = 'alerting-service'): Record<string, unknown> {
+  return buildOutboxRecord(DEPT_ID, source, eventType, 'dispatch-1', {
+    dispatchId: 'dispatch-1',
+  }) as unknown as Record<string, unknown>;
+}
 
-describe('alerting-service outboxDrainHandler (bridge)', () => {
+async function buildHandler() {
+  const { createAlertingOutboxDrainHandler } = await import('./outboxDrainHandler.js');
+  const send = vi.fn().mockResolvedValue({ Entries: [{ EventId: 'e-1' }] });
+  const ddbSend = vi.fn().mockResolvedValue({});
+  const handler = createAlertingOutboxDrainHandler({
+    eventBridgeClient: { send } as unknown as EventBridgeClient,
+    ddbClient: { send: ddbSend } as unknown as DynamoDBDocumentClient,
+  }) as StreamHandler;
+  return { handler, send, ddbSend };
+}
+
+describe('alerting-service outboxDrainHandler (platform-bus bridge)', () => {
   const originalEnv = { ...process.env };
 
   beforeEach(() => {
     vi.resetModules();
     process.env.PLATFORM_EVENT_BUS_NAME = 'boxalarm-dev-platform-bus';
+    process.env.ALERTING_TABLE_NAME = 'boxalarm-dev-alerting-table';
+    delete process.env.PLATFORM_TABLE_NAME;
   });
 
   afterEach(() => {
     process.env = { ...originalEnv };
+    vi.restoreAllMocks();
+  });
+
+  it('throws before any AWS call when ALERTING_TABLE_NAME is not set (entrypoint test)', async () => {
+    delete process.env.ALERTING_TABLE_NAME;
+    const { handler } = await import('./outboxDrainHandler.js');
+    await expect(
+      (handler as StreamHandler)({
+        Records: [insertRecord(outboxItem(BRIDGE_EVENT_TYPES[0]), 's')],
+      }),
+    ).rejects.toThrow('ALERTING_TABLE_NAME is required and was not set');
   });
 
   it('throws before any AWS call when PLATFORM_EVENT_BUS_NAME is not set (entrypoint test)', async () => {
     delete process.env.PLATFORM_EVENT_BUS_NAME;
     const { handler } = await import('./outboxDrainHandler.js');
-    await expect((handler as StreamHandler)(streamEvent([]))).rejects.toThrow(
+    await expect((handler as StreamHandler)({ Records: [] })).rejects.toThrow(
       'PLATFORM_EVENT_BUS_NAME is required and was not set',
     );
   });
 
-  it('bridges a dispatch.alert.received OUTBOX_ENTRY to the platform bus with source alerting-service', async () => {
-    const { createOutboxDrainHandler } = await import('./outboxDrainHandler.js');
-    const send = vi.fn().mockResolvedValue({});
-    const handler = createOutboxDrainHandler(fakeClient(send));
-    const result = await (handler as StreamHandler)(
-      streamEvent([outboxRecord(OUTBOX_ITEM, 'seq-1')]),
-    );
-    expect(send).toHaveBeenCalledTimes(1);
-    expect(result).toEqual({ batchItemFailures: [] });
-    const command = send.mock.calls[0]?.[0] as {
-      input: { Entries: Array<Record<string, unknown>> };
-    };
-    const entry = command.input.Entries[0];
-    expect(entry?.EventBusName).toBe('boxalarm-dev-platform-bus');
-    expect(entry?.Source).toBe('alerting-service');
-    expect(entry?.DetailType).toBe('dispatch.alert.received');
-    const detail = JSON.parse(entry?.Detail as string) as Record<string, unknown>;
-    expect(detail.eventId).toBe('evt-1');
-    expect(detail.correlationId).toBe('NICHOLS-MANUAL-1798000000-abcd1234');
+  it.each(BRIDGE_EVENT_TYPES)(
+    'bridges allow-listed %s to the platform bus as alerting-service and marks it sent on the alerting table',
+    async (eventType) => {
+      const { handler, send, ddbSend } = await buildHandler();
+      const result = await handler({ Records: [insertRecord(outboxItem(eventType), 'seq-1')] });
+      expect(result).toEqual({ batchItemFailures: [] });
+      const command = send.mock.calls[0]?.[0] as {
+        input: { Entries: Array<{ EventBusName: string; Source: string; DetailType: string }> };
+      };
+      expect(command.input.Entries).toEqual([
+        expect.objectContaining({
+          EventBusName: 'boxalarm-dev-platform-bus',
+          Source: 'alerting-service',
+          DetailType: eventType,
+        }),
+      ]);
+      const update = ddbSend.mock.calls[0]?.[0] as { input: { TableName: string } };
+      expect(update.input.TableName).toBe('boxalarm-dev-alerting-table');
+    },
+  );
+
+  it('publishes under Source alerting-service even when the row claims another source', async () => {
+    const { handler, send } = await buildHandler();
+    await handler({
+      Records: [insertRecord(outboxItem('dispatch.alert.received', 'personnel-service'), 'seq-1')],
+    });
+    const command = send.mock.calls[0]?.[0] as { input: { Entries: Array<{ Source: string }> } };
+    expect(command.input.Entries[0]?.Source).toBe('alerting-service');
   });
 
-  it('skips a stream record whose entityType is not OUTBOX_ENTRY, publishing nothing', async () => {
-    const { createOutboxDrainHandler } = await import('./outboxDrainHandler.js');
-    const send = vi.fn().mockResolvedValue({});
-    const handler = createOutboxDrainHandler(fakeClient(send));
-    const result = await (handler as StreamHandler)(
-      streamEvent([outboxRecord({ entityType: 'DISPATCH_ALERT' }, 'seq-1')]),
-    );
+  it('does not publish or mark sent an alerting OUTBOX_ENTRY outside the bridge allow-list', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    const { handler, send, ddbSend } = await buildHandler();
+    const result = await handler({
+      Records: [insertRecord(outboxItem('alerting.delivery.receipt.recorded'), 'seq-1')],
+    });
     expect(send).not.toHaveBeenCalled();
+    expect(ddbSend).not.toHaveBeenCalled();
     expect(result).toEqual({ batchItemFailures: [] });
-  });
-
-  it('reports batchItemFailures instead of rejecting on EventBridge PutEvents failure', async () => {
-    const { createOutboxDrainHandler } = await import('./outboxDrainHandler.js');
-    const send = vi.fn().mockRejectedValue(new Error('EventBridge unavailable'));
-    const handler = createOutboxDrainHandler(fakeClient(send));
-    const result = await (handler as StreamHandler)(
-      streamEvent([outboxRecord(OUTBOX_ITEM, 'seq-1')]),
-    );
-    expect(result).toEqual({ batchItemFailures: [{ itemIdentifier: 'seq-1' }] });
   });
 });

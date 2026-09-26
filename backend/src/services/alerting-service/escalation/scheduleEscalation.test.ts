@@ -56,6 +56,7 @@ describe('createEscalationSchedule', () => {
   beforeEach(() => {
     process.env.ESCALATION_HANDLER_ARN = 'arn:aws:lambda:us-east-1:1:function:escalation';
     process.env.ESCALATION_SCHEDULER_ROLE_ARN = 'arn:aws:iam::1:role/scheduler';
+    process.env.ESCALATION_SCHEDULE_GROUP_NAME = 'boxalarm-dev-alerting-escalation';
   });
 
   afterEach(() => {
@@ -77,6 +78,9 @@ describe('createEscalationSchedule', () => {
     expect(send).toHaveBeenCalledTimes(1);
     const command = send.mock.calls[0]?.[0] as { input: Record<string, unknown> };
     expect(command.input.Name).toBe('esc-NICHOLS-dispatch-1-mbr-1-1');
+    // IAM scopes CreateSchedule to schedule/<dedicated group>/* — omitting GroupName
+    // lands the schedule in `default` and is denied.
+    expect(command.input.GroupName).toBe('boxalarm-dev-alerting-escalation');
     const target = command.input.Target as { Input: string };
     expect(JSON.parse(target.Input)).toEqual({
       deptId: DEPT_ID,
@@ -85,5 +89,22 @@ describe('createEscalationSchedule', () => {
       toneSequence: 1,
       channel: 'voice',
     });
+  });
+
+  it('fails loudly when ESCALATION_SCHEDULE_GROUP_NAME is unset instead of creating in `default`', async () => {
+    delete process.env.ESCALATION_SCHEDULE_GROUP_NAME;
+    const { createEscalationSchedule } = await import('./scheduleEscalation.js');
+    const send = vi.fn().mockResolvedValue({});
+
+    await expect(
+      createEscalationSchedule({ send } as unknown as SchedulerClient, {
+        deptId: DEPT_ID,
+        dispatchId: 'dispatch-1',
+        memberId: 'mbr-1',
+        toneSequence: 1,
+        delaySeconds: 75,
+      }),
+    ).rejects.toThrow('ESCALATION_SCHEDULE_GROUP_NAME is required');
+    expect(send).not.toHaveBeenCalled();
   });
 });

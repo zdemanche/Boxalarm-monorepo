@@ -6,7 +6,7 @@ import {
   type DynamoDBDocumentClient,
 } from '@aws-sdk/lib-dynamodb';
 import { buildDeptScopedPk, type VerifiedDeptId } from '@boxalarm/dept-scope';
-import { buildOutboxRecord } from '@boxalarm/outbox';
+import { buildBridgeOutboxRecord } from '../platformBusBridge.js';
 import type { AckStatus } from '../dispatchRosterEntry.js';
 import { parseSnapshotItem } from '../eligibility/selector.js';
 import { logError, logInfo } from '../dispatches/logger.js';
@@ -86,13 +86,13 @@ export async function recordResponse(
               {
                 Put: {
                   TableName: tableName,
-                  Item: buildOutboxRecord(
+                  Item: buildBridgeOutboxRecord(deptId, 'alerting.response.confirmed', dispatchId, {
                     deptId,
-                    'alerting-service',
-                    'alerting.response.confirmed',
                     dispatchId,
-                    { deptId, dispatchId, memberId, status: ackStatus, ackAt: answeredAt },
-                  ),
+                    memberId,
+                    status: ackStatus,
+                    ackAt: answeredAt,
+                  }),
                 },
               },
             ]),

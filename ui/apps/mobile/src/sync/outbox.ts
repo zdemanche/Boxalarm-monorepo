@@ -16,6 +16,10 @@ export interface EnqueueInput {
   readonly photoLocalUri?: string;
 }
 
+// Create-only by design: the id is the client idempotency key, so re-enqueueing an id already in
+// the outbox is a no-op that keeps the ORIGINAL payload (any changed fields are dropped). There is
+// no edit/merge or cross-device conflict handling - if an update (PUT/PATCH) path is ever queued
+// here, it needs update-in-place and a conflict strategy rather than this dedup.
 export async function enqueue(input: EnqueueInput): Promise<OutboxRow> {
   const existing = await store.find(input.id);
   if (existing) return existing;
@@ -47,11 +51,24 @@ export async function find(id: string): Promise<OutboxRow | undefined> {
 
 export async function listDrainable(now: number): Promise<OutboxRow[]> {
   const rows = await store.all();
-  return rows.filter((row) => row.status !== 'SYNCING' && row.nextAttemptAt <= now);
+  return rows.filter(
+    (row) => row.status !== 'SYNCING' && row.status !== 'REJECTED' && row.nextAttemptAt <= now,
+  );
 }
 
 export async function markSyncing(id: string): Promise<void> {
   await store.update(id, { status: 'SYNCING' });
+}
+
+// A row is only SYNCING while this process's drain() is working on it, so any SYNCING row found
+// before the first drain of a process was stranded by a kill/crash mid-sync. Without this reset
+// listDrainable would exclude it forever. Safe to re-POST: the row id is the idempotency key.
+export async function recoverOrphanedSyncing(): Promise<void> {
+  const rows = await store.all();
+  const orphaned = rows.filter((row) => row.status === 'SYNCING');
+  await Promise.all(
+    orphaned.map((row) => store.update(row.id, { status: 'QUEUED', nextAttemptAt: Date.now() })),
+  );
 }
 
 export async function markFailed(id: string, error: string): Promise<void> {
@@ -66,12 +83,25 @@ export async function markFailed(id: string, error: string): Promise<void> {
   });
 }
 
+export async function markRejected(id: string, error: string): Promise<void> {
+  const row = await store.find(id);
+  await store.update(id, {
+    status: 'REJECTED',
+    attempts: (row?.attempts ?? 0) + 1,
+    lastError: error,
+  });
+}
+
 export async function markSynced(id: string): Promise<void> {
   await store.remove(id);
 }
 
 export async function retry(id: string): Promise<void> {
   await store.update(id, { status: 'QUEUED', nextAttemptAt: Date.now() });
+}
+
+export async function discard(id: string): Promise<void> {
+  await store.remove(id);
 }
 
 export async function advanceStage(

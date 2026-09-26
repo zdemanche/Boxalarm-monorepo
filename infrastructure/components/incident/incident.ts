@@ -138,9 +138,15 @@ export class Incident extends pulumi.ComponentResource {
           ])
           .apply(([cmk, vp, s3, tableArn]) => [
             {
+              // PutItem: the incident.updated OUTBOX_ENTRY committed with the update.
               Sid: "IncidentUpdateAccess" as const,
               Effect: "Allow" as const,
-              Action: ["dynamodb:GetItem", "dynamodb:UpdateItem", "dynamodb:Query"],
+              Action: [
+                "dynamodb:GetItem",
+                "dynamodb:UpdateItem",
+                "dynamodb:PutItem",
+                "dynamodb:Query",
+              ],
               Resource: [tableArn],
             },
             ...cmk,
@@ -170,9 +176,10 @@ export class Incident extends pulumi.ComponentResource {
           .all([cmkStatement, vpStatement, args.incidentTableArn])
           .apply(([cmk, vp, tableArn]) => [
             {
+              // PutItem: the incident.narrative.updated OUTBOX_ENTRY committed with the update.
               Sid: "IncidentNarrativeAccess" as const,
               Effect: "Allow" as const,
-              Action: ["dynamodb:GetItem", "dynamodb:UpdateItem"],
+              Action: ["dynamodb:GetItem", "dynamodb:UpdateItem", "dynamodb:PutItem"],
               Resource: [tableArn],
             },
             ...cmk,
@@ -201,9 +208,18 @@ export class Incident extends pulumi.ComponentResource {
           .all([cmkStatement, vpStatement, args.incidentTableArn])
           .apply(([cmk, vp, tableArn]) => [
             {
+              // ConditionCheckItem: parent-incident existence check inside the transaction;
+              // GetItem: read-back of the committed RESPONSE# row; PutItem: the
+              // incident.response_unit.updated OUTBOX_ENTRY.
               Sid: "IncidentResponseTimesAccess" as const,
               Effect: "Allow" as const,
-              Action: ["dynamodb:PutItem", "dynamodb:UpdateItem", "dynamodb:Query"],
+              Action: [
+                "dynamodb:ConditionCheckItem",
+                "dynamodb:GetItem",
+                "dynamodb:PutItem",
+                "dynamodb:UpdateItem",
+                "dynamodb:Query",
+              ],
               Resource: [tableArn],
             },
             ...cmk,
@@ -367,6 +383,7 @@ export class Incident extends pulumi.ComponentResource {
         lambda: dispatchAlertLambda.function,
         lambdaRole: dispatchAlertLambda.role,
         maxReceiveCount: 5,
+        reportBatchItemFailures: true,
       },
       { parent: this },
     );
@@ -407,6 +424,7 @@ export class Incident extends pulumi.ComponentResource {
         lambda: dispatchResponseLambda.function,
         lambdaRole: dispatchResponseLambda.role,
         maxReceiveCount: 5,
+        reportBatchItemFailures: true,
       },
       { parent: this },
     );

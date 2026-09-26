@@ -5,10 +5,14 @@ import { ServiceLogGroup } from "../observability/service-log-group";
 import { IamPolicyStatement } from "../observability/observability-policy";
 import { requireEnv } from "../shared/env";
 import { lambdaCode, LAMBDA_HANDLER } from "../shared/lambda-code";
+import { grantAlertingCmk } from "./alerting-cmk";
+import { ALERT_PATH_MEMORY_MB } from "./messaging-alerting";
 
 export interface EscalationArgs {
   env: string;
   alertingTableArn: pulumi.Input<string>;
+  /** Alerting-table CMK — every role touching the table needs it (alerting-cmk.ts). */
+  alertingCmkArn: pulumi.Input<string>;
   alertingTopicArn: pulumi.Input<string>;
   alertingTableName: pulumi.Input<string>;
   logGroup: ServiceLogGroup;
@@ -27,6 +31,13 @@ export class Escalation extends pulumi.ComponentResource {
   public readonly toneEvaluatorLambda: ServiceLambda;
   /** ARN pattern scoping scheduler:CreateSchedule to schedules within this group only. */
   public readonly scheduleResourcePattern: pulumi.Output<string>;
+  /**
+   * Cross-seam contract: every Lambda that creates schedules gets this as
+   * ESCALATION_SCHEDULE_GROUP_NAME and passes it as CreateSchedule's GroupName
+   * (scheduleEscalation.ts / toneLadder.ts). Without it the schedule lands in the
+   * `default` group, outside scheduleResourcePattern, and is denied.
+   */
+  public readonly scheduleGroupName: pulumi.Output<string>;
 
   constructor(name: string, args: EscalationArgs, opts?: pulumi.ComponentResourceOptions) {
     requireEnv("Escalation", args.env);
@@ -39,6 +50,8 @@ export class Escalation extends pulumi.ComponentResource {
       { name: groupName },
       { parent: this },
     );
+
+    this.scheduleGroupName = this.scheduleGroup.name;
 
     const region = aws.getRegionOutput({}, { parent: this });
     const caller = aws.getCallerIdentityOutput({}, { parent: this });
@@ -82,6 +95,9 @@ export class Escalation extends pulumi.ComponentResource {
         },
         additionalPolicyStatements: escalationPolicy,
         reservedConcurrentExecutions: 5,
+        // Roster GetItem, TransactWrite, SNS publish — explicit rather than the 3s default.
+        timeout: 15,
+        memorySize: ALERT_PATH_MEMORY_MB,
         permissionsBoundaryArn: args.permissionsBoundaryArn,
       },
       { parent: this },
@@ -123,6 +139,7 @@ export class Escalation extends pulumi.ComponentResource {
           ALERTING_TOPIC_ARN: args.alertingTopicArn,
           ESCALATION_HANDLER_ARN: this.lambda.function.arn,
           ESCALATION_SCHEDULER_ROLE_ARN: this.schedulerRole.arn,
+          ESCALATION_SCHEDULE_GROUP_NAME: this.scheduleGroupName,
         },
         additionalPolicyStatements: pulumi
           .all([args.alertingTableArn, args.alertingTopicArn, this.scheduleResourcePattern])
@@ -153,6 +170,9 @@ export class Escalation extends pulumi.ComponentResource {
             },
           ]),
         reservedConcurrentExecutions: 5,
+        // Roster query, re-page publishes, and per-member escalation scheduling.
+        timeout: 30,
+        memorySize: ALERT_PATH_MEMORY_MB,
         permissionsBoundaryArn: args.permissionsBoundaryArn,
       },
       { parent: this },
@@ -199,6 +219,16 @@ export class Escalation extends pulumi.ComponentResource {
             }),
           ),
       },
+      { parent: this },
+    );
+
+    grantAlertingCmk(
+      name,
+      {
+        escalation: this.lambda.role,
+        toneEvaluator: this.toneEvaluatorLambda.role,
+      },
+      args.alertingCmkArn,
       { parent: this },
     );
 

@@ -96,6 +96,26 @@ describe("OutboxPublisher", () => {
     expect(env?.variables?.PLATFORM_EVENT_BUS_NAME).toBe("boxalarm-dev-platform-bus");
   });
 
+  it("grants sqs:SendMessage on its own on-failure queue so exhausted records reach it", async () => {
+    const publisher = await build();
+    const [policyJson, queueArn] = await Promise.all([
+      resolve(publisher.onFailureSendPolicy.policy),
+      resolve(publisher.onFailureQueue.arn),
+    ]);
+    const policy = JSON.parse(policyJson) as {
+      Statement: Array<{ Sid: string; Action: string[]; Resource: string }>;
+    };
+    const statement = policy.Statement.find((s) => s.Sid === "SendToOnFailureQueue");
+    expect(statement?.Action).toEqual(["sqs:SendMessage"]);
+    expect(statement?.Resource).toBe(queueArn);
+  });
+
+  it("honours the drain handler's batchItemFailures (ReportBatchItemFailures) so a failed publish is retried, not skipped", async () => {
+    const publisher = await build();
+    const responseTypes = await resolve(publisher.eventSourceMapping.functionResponseTypes);
+    expect(responseTypes).toEqual(["ReportBatchItemFailures"]);
+  });
+
   it("bisects the batch on function error so one bad record doesn't stall the whole stream", async () => {
     const publisher = await build();
     const bisect = await resolve(publisher.eventSourceMapping.bisectBatchOnFunctionError);

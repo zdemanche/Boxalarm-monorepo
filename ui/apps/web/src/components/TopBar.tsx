@@ -1,4 +1,5 @@
 import { useAuth } from '../auth/AuthContext';
+import { primaryRole as pickPrimaryRole } from '../auth/roles';
 import { useOnlineStatus } from '../lib/useOnlineStatus';
 import { usePalette } from '../lib/usePalette';
 import { IconButton } from './ui/Button';
@@ -25,7 +26,8 @@ export function TopBar({ onOpenNav }: TopBarProps) {
   const { roles } = useAuth();
   const [palette, setPalette] = usePalette();
   const isCab = palette === 'cab';
-  const primaryRole = roles[0];
+  // Cognito group order is arbitrary; label with the highest-priority role (PR #321 m12).
+  const primaryRole = roles.length > 0 ? pickPrimaryRole(roles) : undefined;
   // MAJOR-2 (PR #318 review): this used to be a hardcoded "Connected" string in this live
   // region, which is a false operational-status claim in a life-safety dispatch app - it never
   // reflected reality, including when the API was down or the browser was offline. This is the

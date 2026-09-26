@@ -1,5 +1,6 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import {
+  ActionAfterCompletion,
   SchedulerClient,
   CreateScheduleCommand,
   DeleteScheduleCommand,
@@ -152,6 +153,23 @@ function dependencyUnavailableProblem(traceId: string): APIGatewayProxyResultV2 
   };
 }
 
+/**
+ * EventBridge Scheduler names are capped at 64 chars ([0-9a-zA-Z-_.]). The readable form
+ * `avail-{deptId}-{memberId}-{startAt}` is already 64 chars for a 36-char Cognito sub and
+ * deptId `nichols-fd`, so a `-start`/`-end` suffix got truncated away and the two schedules
+ * of a future-dated markoff collided. A 40-hex-char sha256 of the same triple keeps the name
+ * deterministic and unique per markoff at a fixed 46 chars, and keeps the `avail-` prefix the
+ * create Lambda's IAM resource pattern (schedule/default/avail-*) matches.
+ */
+export function availabilityScheduleBaseName(
+  deptId: string,
+  memberId: string,
+  startAt: number,
+): string {
+  const digest = createHash('sha256').update(`${deptId}#${memberId}#${startAt}`).digest('hex');
+  return `avail-${digest.slice(0, 40)}`;
+}
+
 interface ScheduleSpec {
   readonly action: TransitionAction;
   readonly at: number;
@@ -228,7 +246,7 @@ export async function createAvailability(
   };
 
   const scheduler = getSchedulerClient(deps.schedulerClient);
-  const scheduleBaseName = `avail-${deptId}-${memberId}-${parsed.startAt}`;
+  const scheduleBaseName = availabilityScheduleBaseName(deptId, memberId, parsed.startAt);
   const schedulesToCreate: readonly ScheduleSpec[] = activatesImmediately
     ? [{ action: 'REVERT', at: parsed.endAt, suffix: 'end' }]
     : [
@@ -239,11 +257,14 @@ export async function createAvailability(
   const createdScheduleNames: string[] = [];
   try {
     for (const schedule of schedulesToCreate) {
-      const scheduleName = `${scheduleBaseName}-${schedule.suffix}`.slice(0, 64);
+      const scheduleName = `${scheduleBaseName}-${schedule.suffix}`;
       await scheduler.send(
         new CreateScheduleCommand({
           Name: scheduleName,
           ScheduleExpression: `at(${new Date(schedule.at * 1000).toISOString().slice(0, 19)})`,
+          // One-time at() schedules otherwise linger after firing and accumulate toward the
+          // account's Scheduler quota (#327 review SUG-1).
+          ActionAfterCompletion: ActionAfterCompletion.DELETE,
           FlexibleTimeWindow: { Mode: FlexibleTimeWindowMode.OFF },
           Target: {
             Arn: schedulerConfig.expiryHandlerFunctionArn,

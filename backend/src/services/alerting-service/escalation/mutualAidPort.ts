@@ -5,11 +5,15 @@ import {
   type DynamoDBDocumentClient,
 } from '@aws-sdk/lib-dynamodb';
 import { buildDeptScopedPk, type VerifiedDeptId } from '@boxalarm/dept-scope';
-import { buildOutboxRecord } from '@boxalarm/outbox';
+import { buildBridgeOutboxRecord } from '../platformBusBridge.js';
 import { queryEligibleMembers, type EligibilitySnapshotItem } from '../eligibility/selector.js';
 import { resolvePushTarget } from '../eligibility/resolvePushTarget.js';
 import { logError, logInfo } from '../dispatches/logger.js';
 import { buildAlertingEnvelope } from './alertingEnvelope.js';
+import {
+  buildMutualAidPromptPayload,
+  type DispatchAlertText,
+} from '../channels/channelEnvelope.js';
 
 export type MutualAidReason = 'TONE_3_PREDICATE_UNMET' | 'MANUAL';
 
@@ -20,6 +24,8 @@ export interface MutualAidRequestInput {
   readonly topicArn: string;
   readonly deptId: VerifiedDeptId;
   readonly dispatchId: string;
+  /** The dispatch's METADATA text, so the officer's prompt names the incident it is for. */
+  readonly dispatch: DispatchAlertText;
   readonly reason: MutualAidReason;
 }
 
@@ -39,6 +45,7 @@ async function promptOfficer(
   topicArn: string,
   deptId: VerifiedDeptId,
   dispatchId: string,
+  dispatch: DispatchAlertText,
   officer: EligibilitySnapshotItem,
 ): Promise<boolean> {
   const pushTarget = resolvePushTarget(officer.contactChannels);
@@ -81,12 +88,16 @@ async function promptOfficer(
       new PublishCommand({
         TopicArn: topicArn,
         Message: JSON.stringify(
-          buildAlertingEnvelope('alerting.mutual_aid.triggered', dispatchId, {
+          buildAlertingEnvelope(
+            'alerting.mutual_aid.triggered',
             dispatchId,
-            memberId: officer.memberId,
-            channel: 'push',
-            mutualAid: true,
-          }),
+            buildMutualAidPromptPayload({
+              deptId,
+              dispatchId,
+              memberId: officer.memberId,
+              dispatch,
+            }),
+          ),
         ),
         MessageGroupId: dispatchId,
         MessageDeduplicationId: idempotencyKey,
@@ -105,7 +116,7 @@ async function promptOfficer(
 }
 
 export async function requestMutualAid(input: MutualAidRequestInput): Promise<MutualAidResult> {
-  const { ddb, sns, tableName, topicArn, deptId, dispatchId, reason } = input;
+  const { ddb, sns, tableName, topicArn, deptId, dispatchId, dispatch, reason } = input;
   const pk = buildDeptScopedPk(deptId, 'DISPATCH', dispatchId);
   const triggeredAt = Math.floor(Date.now() / 1000);
 
@@ -149,7 +160,7 @@ export async function requestMutualAid(input: MutualAidRequestInput): Promise<Mu
   // (caught or not) must never block or delay the rest of the officer roster being prompted.
   const promptResults = await Promise.allSettled(
     officers.map((officer) =>
-      promptOfficer(ddb, sns, tableName, topicArn, deptId, dispatchId, officer),
+      promptOfficer(ddb, sns, tableName, topicArn, deptId, dispatchId, dispatch, officer),
     ),
   );
   let officersNotified = 0;
@@ -171,20 +182,14 @@ export async function requestMutualAid(input: MutualAidRequestInput): Promise<Mu
     await ddb.send(
       new PutCommand({
         TableName: tableName,
-        Item: buildOutboxRecord(
-          deptId,
-          'alerting-service',
-          'alerting.mutual_aid.triggered',
+        Item: buildBridgeOutboxRecord(deptId, 'alerting.mutual_aid.triggered', dispatchId, {
           dispatchId,
-          {
-            dispatchId,
-            triggeredAt,
-            reason,
-            predicateSnapshot: { officerCount: officers.length },
-            adapterUsed: ADAPTER_NAME,
-            officersNotified,
-          },
-        ),
+          triggeredAt,
+          reason,
+          predicateSnapshot: { officerCount: officers.length },
+          adapterUsed: ADAPTER_NAME,
+          officersNotified,
+        }),
       }),
     );
   } catch (error) {

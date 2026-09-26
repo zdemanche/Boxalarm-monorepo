@@ -77,6 +77,7 @@ describe('putResponseTimes handler', () => {
         unitType: 'APPARATUS',
         times: { arrivedAt: 200 },
       }),
+      'req-1',
     );
   });
 

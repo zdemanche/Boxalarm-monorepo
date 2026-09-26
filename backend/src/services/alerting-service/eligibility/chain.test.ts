@@ -315,7 +315,14 @@ describe('E2-S5 chain: markoff creation suppresses fan-out eligibility and rever
     expect(typeof markedOffEnvelope.eventTime).toBe('string');
 
     await consume({
-      Records: [{ messageId: 'm1', body: publishedDetails[0]! }],
+      Records: [
+        {
+          messageId: 'm1',
+          body: JSON.stringify({
+            detail: JSON.parse(publishedDetails[0]!) as Record<string, unknown>,
+          }),
+        },
+      ],
     } as unknown as SQSEvent);
 
     const eligibleWhileMarkedOff = await queryEligibleMembers(
@@ -372,7 +379,14 @@ describe('E2-S5 chain: markoff creation suppresses fan-out eligibility and rever
     expect(publishedDetails).toHaveLength(2);
 
     await consume({
-      Records: [{ messageId: 'm2', body: publishedDetails[1]! }],
+      Records: [
+        {
+          messageId: 'm2',
+          body: JSON.stringify({
+            detail: JSON.parse(publishedDetails[1]!) as Record<string, unknown>,
+          }),
+        },
+      ],
     } as unknown as SQSEvent);
 
     const eligibleAfterRevert = await queryEligibleMembers(

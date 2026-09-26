@@ -10,7 +10,7 @@ import { AuthProvider } from '../auth/AuthContext';
 import { LandingPage } from './LandingPage';
 
 const server = setupServer(
-  http.get('/api/v1/apparatus', () => HttpResponse.json({ items: [] })),
+  http.get('/api/v1/apparatus', () => HttpResponse.json({ apparatus: [] })),
   http.get('/api/v1/personnel/members', () => HttpResponse.json({ items: [] })),
 );
 beforeAll(() => server.listen());
@@ -88,7 +88,7 @@ test('OFFICER dashboard never requests apparatus (routeTable denies it) and show
   server.use(
     http.get('/api/v1/apparatus', () => {
       apparatusRequested = true;
-      return HttpResponse.json({ items: [] });
+      return HttpResponse.json({ apparatus: [] });
     }),
   );
 
@@ -123,4 +123,22 @@ test('a failed apparatus query renders the generic ApiErrorState, never a "0 / 0
   renderLanding({ sub: 'm1', 'cognito:groups': ['CHIEF'] });
   await screen.findByRole('heading', { name: 'Something went wrong loading this page' });
   expect(screen.queryByText(/0 \/ 0/)).toBeNull();
+});
+
+test('CHIEF dashboard reads the real { apparatus } list payload into the tiles (m9)', async () => {
+  server.use(
+    http.get('/api/v1/apparatus', () =>
+      HttpResponse.json({
+        apparatus: [
+          { apparatusId: 'a1', unitId: 'E1', type: 'Engine', status: 'IN_SERVICE' },
+          { apparatusId: 'a2', unitId: 'T1', type: 'Ladder', status: 'OUT_OF_SERVICE' },
+        ],
+      }),
+    ),
+  );
+
+  renderLanding({ sub: 'm1', 'cognito:groups': ['CHIEF'] });
+  await screen.findByRole('heading', { name: 'Chief dashboard' });
+  expect(await screen.findByText('1 / 2')).toBeTruthy();
+  expect(screen.queryByText('Something went wrong loading this page')).toBeNull();
 });

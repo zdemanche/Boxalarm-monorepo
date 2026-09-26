@@ -106,7 +106,7 @@ describe('handler (audit query entrypoint)', () => {
     expect(JSON.parse(result.body ?? '{}')).toEqual({ entries: [] });
   });
 
-  it('authorizes the memberId query against the requested member, not the caller (AC5 IDOR guard)', async () => {
+  it("authorizes another member's history as department audit data, not as the caller's own (AC5 IDOR guard)", async () => {
     const { send } = mockAuthzDecision('ALLOW');
     mockDynamo('OK', []);
     const { handler } = await import('./handler.js');
@@ -119,11 +119,35 @@ describe('handler (audit query entrypoint)', () => {
     );
 
     const call = send.mock.calls[0]?.[0] as {
-      input: { resource?: { entityType?: string; entityId?: string } };
+      input: {
+        action?: { actionId?: string };
+        resource?: { entityType?: string; entityId?: string };
+      };
     };
-    const input = call.input;
-    expect(input.resource?.entityType).toBe('Boxalarm::Member');
-    expect(input.resource?.entityId).toBe('mbr-999');
+    expect(call.input.action?.actionId).toBe('ViewAlertingAuditLog');
+    expect(call.input.resource).toEqual({ entityType: 'Boxalarm::Department', entityId: DEPT_ID });
+  });
+
+  it("authorizes the caller's own history as ViewOwnDeliveryHistory on their member record", async () => {
+    const { send } = mockAuthzDecision('ALLOW');
+    mockDynamo('OK', []);
+    const { handler } = await import('./handler.js');
+
+    await handler(
+      buildEvent(
+        { memberId: 'mbr-102' },
+        { principal: { sub: 'mbr-102', deptId: DEPT_ID, 'cognito:groups': 'member' } },
+      ),
+    );
+
+    const call = send.mock.calls[0]?.[0] as {
+      input: {
+        action?: { actionId?: string };
+        resource?: { entityType?: string; entityId?: string };
+      };
+    };
+    expect(call.input.action?.actionId).toBe('ViewOwnDeliveryHistory');
+    expect(call.input.resource).toEqual({ entityType: 'Boxalarm::Member', entityId: 'mbr-102' });
   });
 
   it('denies (fails closed) 403 when Cedar denies the action (AC5)', async () => {

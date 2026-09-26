@@ -108,6 +108,7 @@ describe('channel failure-domain isolation and no-SPOF chaos verification (E1-S1
       '+12035550100',
       expect.any(String),
       expect.anything(),
+      { isTest: false },
     );
     expect(putCallsFor(ddbSendMock)).toBe(2);
   });
@@ -134,12 +135,14 @@ describe('channel failure-domain isolation and no-SPOF chaos verification (E1-S1
       'push-token',
       expect.any(String),
       expect.anything(),
+      { isTest: false },
     );
     expect(sendMock).toHaveBeenCalledWith(
       'voice',
       '+12035550100',
       expect.any(String),
       expect.anything(),
+      { isTest: false },
     );
     expect(putCallsFor(ddbSendMock)).toBe(3);
   });
@@ -163,6 +166,7 @@ describe('channel failure-domain isolation and no-SPOF chaos verification (E1-S1
       'push-token',
       expect.any(String),
       expect.anything(),
+      { isTest: false },
     );
     expect(putCallsFor(ddbSendMock)).toBe(2);
   });

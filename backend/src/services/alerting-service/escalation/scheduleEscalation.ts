@@ -13,6 +13,21 @@ const DEFAULT_ESCALATION_THRESHOLD_SECONDS = 75;
 export interface EscalationSchedulerConfig {
   readonly escalationHandlerArn: string;
   readonly schedulerRoleArn: string;
+  readonly scheduleGroupName: string;
+}
+
+/**
+ * The dedicated EventBridge Scheduler group infra provisions for alerting timers
+ * (`boxalarm-{env}-alerting-escalation`). Every scheduler:CreateSchedule grant is
+ * scoped to `schedule/<this group>/*`, so a schedule created without GroupName lands
+ * in the implicit `default` group and is denied.
+ */
+export function readScheduleGroupName(env: NodeJS.ProcessEnv): string {
+  const scheduleGroupName = env.ESCALATION_SCHEDULE_GROUP_NAME;
+  if (!scheduleGroupName) {
+    throw new Error('ESCALATION_SCHEDULE_GROUP_NAME is required and was not set');
+  }
+  return scheduleGroupName;
 }
 
 export function readEscalationSchedulerConfig(env: NodeJS.ProcessEnv): EscalationSchedulerConfig {
@@ -24,7 +39,7 @@ export function readEscalationSchedulerConfig(env: NodeJS.ProcessEnv): Escalatio
   if (!schedulerRoleArn) {
     throw new Error('ESCALATION_SCHEDULER_ROLE_ARN is required and was not set');
   }
-  return { escalationHandlerArn, schedulerRoleArn };
+  return { escalationHandlerArn, schedulerRoleArn, scheduleGroupName: readScheduleGroupName(env) };
 }
 
 let cachedSchedulerClient: SchedulerClient | undefined;
@@ -85,6 +100,7 @@ export async function createEscalationSchedule(
     await scheduler.send(
       new CreateScheduleCommand({
         Name: scheduleName,
+        GroupName: config.scheduleGroupName,
         ScheduleExpression: `at(${new Date(fireAt * 1000).toISOString().slice(0, 19)})`,
         FlexibleTimeWindow: { Mode: FlexibleTimeWindowMode.OFF },
         Target: {

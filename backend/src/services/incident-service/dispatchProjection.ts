@@ -5,7 +5,7 @@ import {
   QueryCommand,
   type DynamoDBDocumentClient,
 } from '@aws-sdk/lib-dynamodb';
-import { buildDeptScopedPk, type VerifiedDeptId } from '@boxalarm/dept-scope';
+import { assertNoDelimiter, buildDeptScopedPk, type VerifiedDeptId } from '@boxalarm/dept-scope';
 
 export interface DispatchAlertCopy {
   readonly dispatchId: string;
@@ -70,6 +70,10 @@ export async function putRosterCopyEntryIfNewer(
   dispatchId: string,
   entry: RosterCopyEntry,
 ): Promise<'updated' | 'stale'> {
+  // Both come off an event payload and become key segments; enforce here rather than
+  // trusting every producer/consumer to have validated them.
+  assertNoDelimiter(dispatchId, 'dispatchId');
+  assertNoDelimiter(entry.memberId, 'memberId');
   try {
     await client.send(
       new PutCommand({

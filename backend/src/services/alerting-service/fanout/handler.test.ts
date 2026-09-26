@@ -159,8 +159,17 @@ function createFakeScheduler(options: { failCreate?: (name: string) => Error | u
     if (ctorName !== 'CreateScheduleCommand') {
       throw new Error(`handler.test.ts fake scheduler: unsupported command ${ctorName}`);
     }
-    const { Name } = (command as { input: { Name: string } }).input;
+    const { Name, GroupName } = (command as { input: { Name: string; GroupName?: string } }).input;
     attemptedNames.push(Name);
+    // Mirrors the IAM grant: scheduler:CreateSchedule is scoped to the dedicated group
+    // only, so a schedule without GroupName (the implicit `default` group) is denied.
+    if (GroupName !== 'boxalarm-dev-alerting-escalation') {
+      const denied = new Error(
+        `not authorized to create schedule in group ${GroupName ?? 'default'}`,
+      );
+      denied.name = 'AccessDeniedException';
+      return Promise.reject(denied);
+    }
     const failure = options.failCreate?.(Name);
     if (failure) {
       return Promise.reject(failure);
@@ -284,7 +293,9 @@ describe('fanout/handler self-test branch (E1-S8 AC1/AC2/AC3/AC4/AC5)', () => {
     });
 
     const { handler } = await import('./handler.js');
+    const beforeMs = Date.now();
     await handler(selfTestDispatchInsertEvent());
+    const afterMs = Date.now();
 
     expect(sns.calls).toHaveLength(2);
     const receipts = [...ddb.items.values()].filter(
@@ -296,6 +307,9 @@ describe('fanout/handler self-test branch (E1-S8 AC1/AC2/AC3/AC4/AC5)', () => {
     const run = ddb.items.get('DEPT#NICHOLS#MEMBER#mbr-1#SELFTEST#1798000000');
     expect(run?.entityType).toBe('SELF_TEST_RUN');
     expect(run?.overallResult).toBe('PASS');
+    // The canary measures its latency against this completion stamp (canary/handler.ts).
+    expect(run?.completedAtMs).toBeGreaterThanOrEqual(beforeMs);
+    expect(run?.completedAtMs).toBeLessThanOrEqual(afterMs);
     const channelResults = run?.channelResults as Record<string, { ok: boolean; ms: number }>;
     expect(channelResults.PUSH?.ok).toBe(true);
     expect(channelResults.SMS?.ok).toBe(true);
@@ -469,6 +483,7 @@ describe('fanout/handler', () => {
     process.env.ALERTING_TOPIC_ARN = 'arn:aws:sns:us-east-1:1:boxalarm-dev-alerting-topic.fifo';
     process.env.ESCALATION_HANDLER_ARN = 'arn:aws:lambda:us-east-1:1:function:escalation';
     process.env.ESCALATION_SCHEDULER_ROLE_ARN = 'arn:aws:iam::1:role/scheduler';
+    process.env.ESCALATION_SCHEDULE_GROUP_NAME = 'boxalarm-dev-alerting-escalation';
     process.env.TONE_EVALUATOR_HANDLER_ARN = 'arn:aws:lambda:us-east-1:1:function:tone-evaluator';
     const defaultScheduler = createFakeScheduler();
     vi.doMock('../escalation/scheduleEscalation.js', async (importOriginal) => {

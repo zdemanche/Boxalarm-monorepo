@@ -3,10 +3,12 @@ import { ServiceLambda } from "../observability/service-lambda";
 import { ServiceLogGroup } from "../observability/service-log-group";
 import { HttpApi } from "../api/http-api";
 import { verifiedPermissionsPolicyStatement } from "../authz/policy-store";
+import { IamPolicyStatement } from "../observability/observability-policy";
 import { lambdaCode } from "../shared/lambda-code";
 import { requireEnv } from "../shared/env";
 import { PlatformBus } from "../messaging/platform-bus";
 import { QueueConsumer } from "../messaging/queue-consumer";
+import { grantAlertingCmk } from "../alerting/alerting-cmk";
 
 export interface QualsArgs {
   env: string;
@@ -18,15 +20,30 @@ export interface QualsArgs {
   httpApi: HttpApi;
   platformBus: PlatformBus;
   alertingTableArn: pulumi.Input<string>;
+  /** Alerting-table CMK — every role touching the table needs it (alerting-cmk.ts). */
+  alertingCmkArn: pulumi.Input<string>;
   alertingTableName: pulumi.Input<string>;
   alertingLogGroup: ServiceLogGroup;
   alertingPermissionsBoundaryArn?: pulumi.Input<string>;
 }
 
-const TABLE_STATEMENT = (tableArn: pulumi.Input<string>) =>
+// GET: readQuals is a base-table Query (pk + begins_with(sk,'QUAL#')) — read-only.
+const GET_TABLE_STATEMENT = (tableArn: pulumi.Input<string>) =>
   pulumi.output(tableArn).apply((arn) => [
     {
-      Sid: "QualsTableAccess" as const,
+      Sid: "QualsTableRead" as const,
+      Effect: "Allow" as const,
+      Action: ["dynamodb:Query"],
+      Resource: [arn],
+    },
+  ]);
+
+// PUT: memberExists + readCertStatus are GetItems; putQual is a 2-Put transaction,
+// which IAM authorizes item-by-item as PutItem.
+const PUT_TABLE_STATEMENT = (tableArn: pulumi.Input<string>) =>
+  pulumi.output(tableArn).apply((arn) => [
+    {
+      Sid: "QualsTableWrite" as const,
       Effect: "Allow" as const,
       Action: ["dynamodb:GetItem", "dynamodb:PutItem"],
       Resource: [arn],
@@ -45,16 +62,21 @@ export class Quals extends pulumi.ComponentResource {
     super("boxalarm:personnel:Quals", name, {}, opts);
     const { env } = args;
 
+    // readPersonnelServiceConfig (awsClients.ts) throws unless BOTH the table and bus names
+    // are set, on GET and PUT alike — the bus name is required even though quals publishes
+    // via the outbox, not events:PutEvents.
     const baseEnvironment = {
       PERSONNEL_TABLE_NAME: args.platformTableName,
+      PLATFORM_BUS_NAME: args.platformBus.busName,
       VERIFIED_PERMISSIONS_POLICY_STORE_ID: args.policyStoreId,
     };
-    const additionalPolicyStatements = pulumi
-      .all([TABLE_STATEMENT(args.platformTableArn), pulumi.output(args.policyStoreArn)])
-      .apply(([table, policyStoreArn]) => [
-        ...table,
-        verifiedPermissionsPolicyStatement(policyStoreArn),
-      ]);
+    const withAuthz = (table: pulumi.Output<IamPolicyStatement[]>) =>
+      pulumi
+        .all([table, pulumi.output(args.policyStoreArn)])
+        .apply(([statements, policyStoreArn]) => [
+          ...statements,
+          verifiedPermissionsPolicyStatement(policyStoreArn),
+        ]);
     // One bundle (quals/handler.ts exports both getQualsHandler and putQualsHandler) — two
     // Lambdas differ only in which named export they invoke.
     const code = lambdaCode("personnel-service", "quals");
@@ -69,7 +91,7 @@ export class Quals extends pulumi.ComponentResource {
         code,
         logGroup: args.logGroup,
         environment: baseEnvironment,
-        additionalPolicyStatements,
+        additionalPolicyStatements: withAuthz(GET_TABLE_STATEMENT(args.platformTableArn)),
       },
       { parent: this },
     );
@@ -89,7 +111,7 @@ export class Quals extends pulumi.ComponentResource {
         code,
         logGroup: args.logGroup,
         environment: baseEnvironment,
-        additionalPolicyStatements,
+        additionalPolicyStatements: withAuthz(PUT_TABLE_STATEMENT(args.platformTableArn)),
       },
       { parent: this },
     );
@@ -135,6 +157,13 @@ export class Quals extends pulumi.ComponentResource {
         lambdaRole: this.eligibilityChangedConsumer.role,
         maxReceiveCount: 5,
       },
+      { parent: this },
+    );
+
+    grantAlertingCmk(
+      name,
+      { eligibilityChangedConsumer: this.eligibilityChangedConsumer.role },
+      args.alertingCmkArn,
       { parent: this },
     );
 

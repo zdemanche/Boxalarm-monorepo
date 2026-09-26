@@ -194,11 +194,16 @@ function toMemberAttendanceRecord(item: Record<string, unknown>): MemberAttendan
   };
 }
 
+// GSI1's MEMBER#{memberId} partition carries no department, so the caller's department is
+// enforced on the base-table pk (DEPT#{deptId}#TRAINING_EVENT#...) — the same scoping
+// listMemberAttendanceInRange applies — keeping a second department additive (#327 MIN-4).
 export async function listMemberAttendanceRecords(
   client: DynamoDBDocumentClient,
   config: TrainingConfig,
+  deptId: VerifiedDeptId,
   memberId: string,
 ): Promise<readonly MemberAttendanceRecord[]> {
+  const deptPrefix = `${buildDeptScopedPk(deptId, 'TRAINING_EVENT')}#`;
   const items = await queryAllPages(
     client,
     (exclusiveStartKey) =>
@@ -206,9 +211,11 @@ export async function listMemberAttendanceRecords(
         TableName: config.tableName,
         IndexName: 'GSI1',
         KeyConditionExpression: 'gsi1pk = :gsi1pk AND begins_with(gsi1sk, :prefix)',
+        FilterExpression: 'begins_with(pk, :deptPrefix)',
         ExpressionAttributeValues: {
           ':gsi1pk': `MEMBER#${memberId}`,
           ':prefix': ATTENDANCE_GSI1SK_PREFIX,
+          ':deptPrefix': deptPrefix,
         },
         ProjectionExpression: 'eventId, category, hours, gsi1sk',
         Limit: QUERY_PAGE_SIZE,

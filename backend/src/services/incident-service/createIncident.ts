@@ -169,13 +169,19 @@ async function buildInputFromDispatch(
 ): Promise<CreateIncidentInput> {
   const client = getDocumentClient();
   const tableName = getTableName(process.env);
+  // The two lookups are independent, so run them concurrently. The schema lookup's
+  // rejection is observed up front only so an early DispatchNotFound exit can't leave it
+  // unhandled; on the normal path it is awaited (and rethrown) below.
+  const activeSchemaPromise = createSchemaVersionRepository(
+    client,
+    tableName,
+  ).getActiveSchemaVersion();
+  activeSchemaPromise.catch(() => undefined);
   const copy = await getDispatchAlertCopy(client, tableName, deptId, dispatchId);
   if (!copy) {
     throw new DispatchNotFoundError(dispatchId);
   }
-
-  const schemaVersionRepository = createSchemaVersionRepository(client, tableName);
-  const activeSchema = await schemaVersionRepository.getActiveSchemaVersion();
+  const activeSchema = await activeSchemaPromise;
 
   return {
     incidentId: dispatchId,

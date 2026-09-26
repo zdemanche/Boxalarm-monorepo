@@ -22,6 +22,13 @@ export interface QueueConsumerArgs {
    * legitimately needs more.
    */
   maximumConcurrency?: number;
+  /**
+   * Opt in only for a handler that returns an SQSBatchResponse (`batchItemFailures`).
+   * With it set, a handler that returns nothing (or throws for the batch) is treated
+   * as all-succeeded / all-failed respectively, so leave it off for handlers that
+   * still signal failure by throwing — they'd otherwise have their failures deleted.
+   */
+  reportBatchItemFailures?: boolean;
 }
 
 /**
@@ -100,6 +107,9 @@ export class QueueConsumer extends pulumi.ComponentResource {
         functionName: args.lambda.name,
         batchSize: args.batchSize ?? 10,
         scalingConfig: { maximumConcurrency: args.maximumConcurrency ?? 5 },
+        ...(args.reportBatchItemFailures
+          ? { functionResponseTypes: ["ReportBatchItemFailures"] }
+          : {}),
       },
       { parent: this },
     );
