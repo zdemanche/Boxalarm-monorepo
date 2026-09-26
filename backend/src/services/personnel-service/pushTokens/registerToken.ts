@@ -198,8 +198,8 @@ async function registerToken(
 }
 
 export const handler = withAuthorization(registerToken, {
-  actionType: 'MEMBER',
+  actionType: 'Boxalarm::Action',
   actionId: 'RegisterPushToken',
-  resourceType: 'MEMBER',
+  resourceType: 'Boxalarm::Member',
   resourceId: (event) => event.pathParameters?.memberId ?? '',
 });

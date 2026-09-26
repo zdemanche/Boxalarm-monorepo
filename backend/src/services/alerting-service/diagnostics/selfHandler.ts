@@ -52,8 +52,8 @@ async function getOwnDiagnostics(
 }
 
 export const handler = withAuthorization(getOwnDiagnostics, {
-  actionType: 'MEMBER',
+  actionType: 'Boxalarm::Action',
   actionId: 'ViewOwnDiagnostics',
-  resourceType: 'MEMBER',
+  resourceType: 'Boxalarm::Member',
   resourceId: (event) => event.requestContext.authorizer?.lambda?.sub ?? '',
 });

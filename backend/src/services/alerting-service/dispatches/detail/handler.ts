@@ -125,9 +125,9 @@ export function createHandler(
   return withAuthorization(
     (event, principal) => handleGetAlertDetail(event, principal, deps.docClient),
     {
-      actionType: 'Action',
+      actionType: 'Boxalarm::Action',
       actionId: 'ViewAlertDetail',
-      resourceType: 'AlertingDispatches',
+      resourceType: 'Boxalarm::Department',
       resourceId: (event) =>
         toVerifiedDeptId({ deptId: event.requestContext.authorizer.lambda?.deptId ?? '' }),
       ...(deps.authzClient ? { client: deps.authzClient } : {}),

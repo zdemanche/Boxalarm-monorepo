@@ -132,8 +132,8 @@ async function innerHandler(
 }
 
 export const handler = withAuthorization(innerHandler, {
-  actionType: 'AlertingService',
+  actionType: 'Boxalarm::Action',
   actionId: 'RecordResponse',
-  resourceType: 'Dispatch',
+  resourceType: 'Boxalarm::Dispatch',
   resourceId: (event) => event.pathParameters?.dispatchId ?? '',
 });

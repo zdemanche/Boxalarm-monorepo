@@ -153,8 +153,8 @@ async function revokeToken(
 }
 
 export const handler = withAuthorization(revokeToken, {
-  actionType: 'MEMBER',
+  actionType: 'Boxalarm::Action',
   actionId: 'RevokePushToken',
-  resourceType: 'MEMBER',
+  resourceType: 'Boxalarm::Member',
   resourceId: (event) => event.pathParameters?.memberId ?? '',
 });

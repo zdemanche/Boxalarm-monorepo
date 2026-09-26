@@ -55,9 +55,9 @@ async function getDiagnostics(
 export const handler = withAuthorization(
   (event, principal) => getDiagnostics(event, principal, event.pathParameters?.memberId ?? ''),
   {
-    actionType: 'AlertingService',
+    actionType: 'Boxalarm::Action',
     actionId: 'ViewDiagnostics',
-    resourceType: 'Dispatch',
+    resourceType: 'Boxalarm::Dispatch',
     resourceId: (event) => event.pathParameters?.dispatchId ?? '',
   },
 );

@@ -54,9 +54,9 @@ beforeEach(() => {
 describe('roster handler', () => {
   it('wires the ViewRoster action against the Dispatch resource', () => {
     expect(capturedOptions[capturedOptions.length - 1]).toMatchObject({
-      actionType: 'AlertingService',
+      actionType: 'Boxalarm::Action',
       actionId: 'ViewRoster',
-      resourceType: 'Dispatch',
+      resourceType: 'Boxalarm::Dispatch',
     });
   });
 

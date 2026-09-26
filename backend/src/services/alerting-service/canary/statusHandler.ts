@@ -45,8 +45,8 @@ async function getCanaryStatus(
 }
 
 export const handler = withAuthorization(getCanaryStatus, {
-  actionType: 'AlertingService',
+  actionType: 'Boxalarm::Action',
   actionId: 'ViewCanaryStatus',
-  resourceType: 'AlertingDispatches',
+  resourceType: 'Boxalarm::Department',
   resourceId: (event) => event.requestContext.authorizer?.lambda?.deptId ?? '',
 });
